@@ -232,6 +232,10 @@
 | DEC-222 | npm auditをCIに組み込み、High以上の脆弱性でCI失敗 | 22_Security_Design.md |
 | DEC-240 | TypeScriptのenumは使わず`as const`オブジェクト + ユニオン型を使う | 24_Development_Guideline.md |
 | DEC-241 | Prettier設定の内容（フォーマットは全てPrettierに委譲） | 24_Development_Guideline.md |
+| DEC-242 | コミット前チェックはhusky + lint-staged（CI側検査を正とし、邪魔なら外してよい） | 24_Development_Guideline.md |
+| DEC-243 | エラーハンドリングはAppErrorをthrowし共通ハンドラでHTTP変換（Result型不採用） | 24_Development_Guideline.md |
+| DEC-244 | パッケージマネージャはpnpm 10系（packageManagerフィールドで固定） | 24_Development_Guideline.md |
+| DEC-245 | ローカルDBは通常Docker PostgreSQL、Neon固有確認時のみNeonブランチ | 24_Development_Guideline.md |
 | DEC-250 | リポジトリ名はrogue-chronicle | 25_GitHub_Operation.md |
 | DEC-251 | リポジトリ可視性はPrivate推奨 | 25_GitHub_Operation.md |
 | DEC-252 | mainのbranch protection: PR必須・CIステータス必須・直push禁止（approval必須は設定しない） | 25_GitHub_Operation.md |

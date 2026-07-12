@@ -1,0 +1,47 @@
+@import 'tailwindcss';
+
+/*
+ * デザイントークン（docs/08_UI_UX_Design.md §7 を正とする）
+ * テーマ: ダークファンタジー固定（DEC-015 / ライトテーマ非提供）
+ * Tailwind v4 の @theme でトークンをユーティリティ化する。
+ */
+@theme {
+  /* サーフェス */
+  --color-surface-base: #0f1117; /* 画面背景 */
+  --color-surface-raised: #1a1d27; /* カード・パネル */
+
+  /* ブランド・アクション */
+  --color-primary: #8b5cf6; /* プライマリ（紫） */
+  --color-accent-gold: #d4af37; /* レア・強調（金） */
+
+  /* ゲーム状態 */
+  --color-hp: #22c55e;
+  --color-sp: #3b82f6;
+  --color-damage: #ef4444;
+
+  /* テキスト */
+  --color-content: #e5e7eb;
+  --color-content-muted: #9ca3af;
+
+  /* レア度 */
+  --color-rarity-common: #9ca3af;
+  --color-rarity-rare: #3b82f6;
+  --color-rarity-epic: #a855f7;
+
+  /* フォント（最終選定は08章未決事項。Phase 1はシステムスタック） */
+  --font-sans:
+    'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, ui-sans-serif, system-ui,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 演出抑制設定の尊重（docs/04 §8） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

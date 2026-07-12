@@ -1,0 +1,49 @@
+# CI（docs/25_GitHub_Operation.md §8 を正とする）
+# lint → typecheck → test → build。E2Eは通常CIでは実行しない（Phase 11で夜間実行を追加）。
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # ビルド・prisma generateにDB接続は不要だが、環境変数の存在を前提とする箇所のためのダミー値
+      DATABASE_URL: 'postgresql://ci:ci@localhost:5432/ci?sslmode=disable'
+      DIRECT_URL: 'postgresql://ci:ci@localhost:5432/ci?sslmode=disable'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # バージョンは package.json の packageManager を参照
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

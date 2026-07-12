@@ -80,7 +80,7 @@ export type NodeType = (typeof NODE_TYPE)[keyof typeof NODE_TYPE];
 }
 ```
 
-- コミット前チェックは husky + lint-staged で `eslint --fix` と `prettier --write` を実行（仮決定 DEC-103。個人開発のため CI 側検査を正とし、フックが邪魔なら外してよい）
+- コミット前チェックは husky + lint-staged で `eslint --fix` と `prettier --write` を実行（仮決定 DEC-242。個人開発のため CI 側検査を正とし、フックが邪魔なら外してよい）
 
 ### 1.3 命名規約
 
@@ -303,9 +303,9 @@ CORE_SPEC §3・§4 を転記し、本節を正式版とする。全コード・
 
 ## 4. エラーハンドリング規約
 
-### 4.1 基本方針（仮決定 DEC-104）
+### 4.1 基本方針（仮決定 DEC-243）
 
-**usecase / domain は `AppError` クラスを throw し、route handler 側の共通ハンドラが HTTP レスポンスへ変換する**方式を採用する（Result型は不採用。仮決定 DEC-104。理由: route handler・TanStack Query との統合が単純で、個人開発での記述量が最小になるため。domain 層の「想定内分岐」— 命中/回避、成功/失敗など — はエラーではなく戻り値の型で表現し、throw は「契約違反・進行不能」のみに限定する）。
+**usecase / domain は `AppError` クラスを throw し、route handler 側の共通ハンドラが HTTP レスポンスへ変換する**方式を採用する（Result型は不採用。仮決定 DEC-243。理由: route handler・TanStack Query との統合が単純で、個人開発での記述量が最小になるため。domain 層の「想定内分岐」— 命中/回避、成功/失敗など — はエラーではなく戻り値の型で表現し、throw は「契約違反・進行不能」のみに限定する）。
 
 ```ts
 // src/server/services/app-error.ts
@@ -430,11 +430,11 @@ SEED_ALLOW_PRODUCTION="false"
 | ツール | バージョン | 備考 |
 |---|---|---|
 | Node.js | 22 LTS（`.nvmrc` = `22`） | Vercel/CI と一致させる |
-| pnpm | 9系（`packageManager` フィールドで固定） | 採用（仮決定 DEC-105。理由: インストール高速・ディスク効率・厳格な依存解決） |
+| pnpm | 10系（`packageManager` フィールドで固定。Phase 1実装時に9系から更新） | 採用（仮決定 DEC-244。理由: インストール高速・ディスク効率・厳格な依存解決） |
 | Docker Desktop / Docker Engine | 最新安定 | ローカルDB用（選択肢A） |
 | Git | 2.40+ | |
 
-DB は次の2択（どちらでもよい。仮決定 DEC-106: **通常開発は選択肢A（Docker）を推奨**。理由: オフライン開発可・Neon Freeのブランチ数節約。Neon固有挙動の確認時のみ選択肢B）:
+DB は次の2択（どちらでもよい。仮決定 DEC-245: **通常開発は選択肢A（Docker）を推奨**。理由: オフライン開発可・Neon Freeのブランチ数節約。Neon固有挙動の確認時のみ選択肢B）:
 
 - **選択肢A: Docker で PostgreSQL 16 をローカル起動**
 
@@ -569,7 +569,7 @@ pnpm dev                # http://localhost:3000
 
 | ID | 内容 | 期限目安 |
 |---|---|---|
-| ISSUE-240 | husky + lint-staged（DEC-103）を実際に導入するか、CI検査のみで運用するか | Phase 1 終了時 |
+| ISSUE-240 | husky + lint-staged（DEC-242）を実際に導入するか、CI検査のみで運用するか | Phase 1 終了時 |
 | ISSUE-241 | `noUncheckedIndexedAccess` が run_state JSONB 操作で過剰に煩雑になる場合の緩和判断 | Phase 3 |
 | ISSUE-242 | domain 層カバレッジ80%基準の妥当性（戦闘実装後に実測して調整） | Phase 6 |
 | ISSUE-243 | CLAUDE.md の記載粒度（設計書要約をどこまで転記するか） | Phase 1 |

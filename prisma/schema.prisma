@@ -1,0 +1,15 @@
+// Rogue Chronicle — Prisma schema
+// テーブル定義は docs/12_Database_Design.md を正とする。
+// Phase 3（マスタデータ・DB）でモデルを展開する。Phase 1 では接続設定のみ。
+// 部分UNIQUEインデックス・CHECK制約はPrismaで表現できないため、
+// マイグレーションSQLへ手書き追記する（docs/12 実装時の注意点）。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // Neon pooled接続（アプリ実行時）
+  directUrl = env("DIRECT_URL") // Neon direct接続（prisma migrate用）
+}
