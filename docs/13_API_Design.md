@@ -691,3 +691,275 @@ const upgradeSchema = z.object({
 レスポンス（200）: 名称・説明・階層数・出現ノードタイプ一覧（BATTLE/STRONG/ELITE/BOSS/TREASURE/SHOP/REST/EVENT/BLESS/HEAL/CURSE/STORY/SECRET）・出現敵の図鑑登録済みシルエット情報・難易度（Normalのみ）。
 処理概要: 1. セッション検証 → 2. code検索（無ければ `ERR_NOT_FOUND`）→ 3. 返却。
 エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_INTERNAL
+
+#### API-303 ダンジョン開始（重要）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs` |
+| 認証 | 要 |
+| 権限 | ゲスト:○ / 一般:○ / 管理者:○ |
+| 冪等性 | **必須**。`Idempotency-Key` + `dungeon_runs.created_idempotency_key`（§2.10。同一キー再送は既存ランを201で再返却） |
+| レート制限 | general 60回/分/ユーザー |
+| 関連画面 | SCR-204, SCR-205, SCR-207 → 成功後 SCR-301 |
+| 関連テーブル | dungeon_runs, dungeon_run_snapshots, dungeons, dungeon_difficulties, characters, player_characters, equipment, player_equipment, player_upgrades, upgrade_nodes |
+| Tx境界 | dungeon_runs作成+初回スナップショット作成を1トランザクション（読み取り検証はTx前に実施し、Tx内でアクティブラン重複を部分ユニーク制約で最終防衛） |
+
+リクエスト:
+```jsonc
+{
+  "dungeonCode": "forgotten_ruins",
+  "difficultyCode": "normal",
+  "characterCode": "swordsman_rain",
+  "equipment": { "weapon": "iron_sword", "armor": null, "accessory": null } // player_equipmentで永続解放済みのcodeのみ
+}
+```
+バリデーション（Zod）:
+```ts
+const codeStr = z.string().regex(/^[a-z0-9_]{1,50}$/);
+const startRunSchema = z.object({
+  dungeonCode: codeStr,
+  difficultyCode: codeStr,          // MVPは "normal" のみマスタに存在
+  characterCode: codeStr,
+  equipment: z.object({
+    weapon: codeStr.nullable(),
+    armor: codeStr.nullable(),
+    accessory: codeStr.nullable(),
+  }).strict(),
+}).strict();
+// ステータス値・seed・マップ等をクライアントから受け取るフィールドは存在しない（DEC-007）
+```
+レスポンス（201）:
+```jsonc
+{
+  "result": { "created": true },
+  "run": {
+    "runId": "run_01J8Z...",
+    "version": 1,
+    "state": {
+      "schemaVersion": 1,
+      "dungeonCode": "forgotten_ruins",
+      "difficultyCode": "normal",
+      "map": {
+        "floors": [
+          { "floor": 1, "nodes": [ { "nodeId": "f1n1", "type": "BATTLE" } ] },
+          { "floor": 2, "nodes": [ { "nodeId": "f2n1", "type": "BATTLE" }, { "nodeId": "f2n2", "type": "TREASURE" }, { "nodeId": "f2n3", "type": "EVENT" } ] }
+          // …階層10まで。SECRETノードはEVENTとして表示（DEC-027の投影で正体を隠す）
+        ],
+        "edges": [ { "from": "f1n1", "to": ["f2n1", "f2n2", "f2n3"] } ]
+      },
+      "position": { "floor": 1, "nodeId": "f1n1", "phase": "battle" },
+      "character": {
+        "code": "swordsman_rain", "level": 1, "exp": 0,
+        "stats": { "maxHp": 110, "atk": 13, "def": 10, "spd": 10, "critRate": 5, "critDmg": 150, "eva": 0, "acc": 0, "statusRes": 0 },
+        "hp": 110, "sp": 10, "maxSp": 10
+      },
+      "skills": [ { "code": "skill_flame_slash", "level": 1 } ],
+      "equipment": { "weapon": "iron_sword", "armor": null, "accessory": null },
+      "relics": [], "items": [ { "code": "potion", "count": 1 } ],
+      "gold": 100,
+      "battle": { /* 階層1は開始戦闘のため生成済みの戦闘状態。形式はAPI-401参照 */ },
+      "pendingReward": null,
+      "earned": { "soulShards": 0, "rankExp": 0, "kills": 0 }
+    }
+  }
+}
+```
+処理概要:
+1. Zod検証（層1）、セッション検証（層2）。
+2. **アクティブラン存在チェック**: `dungeon_runs` に `user_id=?, status='active'` があれば `ERR_RUN_ALREADY_ACTIVE`（details.runIdを返し、クライアントは再開導線へ）。ただし `created_idempotency_key` が送信キーと一致する場合は再送とみなし既存ランを201で再返却。
+3. マスタ検証: dungeonCode/difficultyCodeがdungeons/dungeon_difficultiesに存在し公開中か（無ければ `ERR_NOT_FOUND`）。
+4. **キャラ所持検証**: player_charactersに解放済みレコードがあるか（無ければ `ERR_INVALID_ACTION`, details.reason="character_locked"）。
+5. **装備所持検証**: equipmentの各スロットについて、player_equipment（永続解放装備）に所持があり、slotが一致するか（`ERR_INVALID_ACTION`, reason="equipment_not_owned" / "slot_mismatch"）。
+6. **永続強化の適用**: player_upgrades×upgrade_nodesから初期HP+5%系・初期ATK+3%系・初期ゴールド+50系・開始時レリック・リロール+1を集計し、`applyPermanentUpgrades`（domain/progression）で初期ステータス・初期ゴールド・初期レリック・リロール回数を算出（総和はステータス+30%以内、CORE_SPEC §5.9）。
+7. **seed生成**: `generateDungeonSeed`（domain/dungeon）でCSPRNGから32bit seedを生成。
+8. **マップ生成**: `generateDungeonMap(seed, generationConfig)`（domain/dungeon）で階層1〜10のノードマップを生成。生成制御（CORE_SPEC §5.6）: 階層1=開始戦闘1個・階層10=BOSS1個・各階層2〜4ノード・階層5/9にREST必須・SHOP全体1〜2・ELITEは階層3以降・同一タイプ3連続禁止・SECRET10%・全パスがボス到達可能であることを`validateMapReachability`で検証。
+9. **run_state組み立て**: `startDungeonRun`（domain/dungeon）で初期run_state（§8のJSONB骨子）を構築。階層1は開始戦闘のため `startBattle`（domain/battle）で敵編成を生成し `battle` を格納、phase="battle"。rngCursorはマップ生成・敵編成で消費した回数。
+10. Tx内: dungeon_runs作成（status='active', seed, version=1, run_state, created_idempotency_key。部分ユニークインデックス `(user_id) WHERE status='active'` で二重作成を最終防衛）+ dungeon_run_snapshots初回世代を作成。
+11. RunView投影（DEC-027）に変換し201で返却。
+
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_ALREADY_ACTIVE / ERR_INVALID_ACTION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_MAINTENANCE / ERR_INTERNAL
+
+#### API-304 現在ラン取得（再開兼用）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET `/api/v1/runs/current` |
+| 認証 | 要 / 権限: 全区分○ / 冪等性: GET |
+| 関連画面 | SCR-101（再開ボタン）, SCR-301, SCR-313（復帰）, ERR_CONFLICT_VERSION後の再同期 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | 読み取りのみ |
+
+レスポンス（200）: `{ "run": { "runId", "version", "state": RunView } }`（API-303と同形）。
+status='cleared'/'failed'/'retired'（未finalize）のランも返し、`state.position.phase` 相当としてトップレベルに `status` を含める。クライアントはstatusに応じてSCR-301/302/401/402へ復帰する。
+処理概要: 1. セッション検証 → 2. `status IN ('active','cleared','failed','retired')` の最新ランを取得（無ければ `ERR_NOT_FOUND`）→ 3. RunView投影で返却。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_INTERNAL
+
+#### API-305 次ノード選択（重要）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/select-node` |
+| 認証 | 要 / 権限: 全区分○ |
+| 冪等性 | **必須**（Idempotency-Key + run_state.lastRequest） |
+| レート制限 | general 60回/分/ユーザー |
+| 関連画面 | SCR-301 → ノードタイプに応じ SCR-302/305/306/307/308 |
+| 関連テーブル | dungeon_runs, dungeon_run_snapshots, enemies, enemy_actions, enemy_ai_rules, reward_tables, equipment, skills, relics, random_events, random_event_choices, stories |
+| Tx境界 | run_state更新（+階層移動時のスナップショット世代追加・3世代超の削除）を1トランザクション |
+
+リクエスト:
+```jsonc
+{ "version": 7, "nodeId": "f4n2" }
+```
+バリデーション（Zod）:
+```ts
+const selectNodeSchema = z.object({
+  version: z.number().int().min(1),
+  nodeId: z.string().regex(/^f(10|[1-9])n[1-4]$/),
+}).strict();
+```
+レスポンス（200・例1: 戦闘ノード）:
+```jsonc
+{
+  "result": {
+    "nodeType": "BATTLE",
+    "battle": {
+      "enemies": [
+        { "slot": 0, "code": "goblin", "name": "ゴブリン", "element": "none", "hp": 58, "maxHp": 58, "intent": { "type": "attack", "label": "攻撃" } },
+        { "slot": 1, "code": "fire_imp", "name": "火の小鬼", "element": "fire", "hp": 44, "maxHp": 44, "intent": { "type": "skill", "label": "火傷付与" } }
+      ],
+      "turnNo": 1, "canFlee": true
+    }
+  },
+  "run": { "runId": "run_01J8Z...", "version": 8, "state": { /* phase="battle", battle格納済みのRunView */ } }
+}
+```
+レスポンス（200・例2: 宝箱ノード）:
+```jsonc
+{
+  "result": {
+    "nodeType": "TREASURE",
+    "pendingReward": {
+      "type": "treasure",
+      "choices": [
+        { "index": 0, "kind": "equipment", "code": "flame_blade", "rarity": "rare", "slot": "weapon" },
+        { "index": 1, "kind": "gold", "amount": 120 }
+      ],
+      "claimed": false
+    }
+  },
+  "run": { "runId": "run_01J8Z...", "version": 8, "state": { /* phase="reward_pending" */ } }
+}
+```
+※nodeTypeにより `result` が変わる: SHOP→`shop.items[]`（在庫と価格、`generateShopItems`で抽選済み）/ REST→`rest.options`（"heal" | "upgrade_skill"）/ EVENT・BLESS・HEAL・CURSE→`event`（本文とchoices。SECRETはEVENT扱い上位報酬でnodeTypeは"EVENT"として返す）/ STORY→`story`（本文。読了で完了）/ STRONG・ELITE・BOSS→BATTLEと同形（`canFlee: false`はELITE/BOSS。CORE_SPEC §5.4の逃走不可）。
+
+処理概要:
+1. Zod検証・セッション検証・アクティブラン取得（無ければ `ERR_NOT_FOUND`）。
+2. 冪等キー照合（§2.10。再送なら保存レスポンス返却）。
+3. run_state整合性検証（`validateRunState` + `selectNextNode` 前段, domain/dungeon）:
+   - `position.phase == "map_select"` であること（戦闘中・報酬未受領中は `ERR_RUN_STATE_INVALID`）。
+   - **隣接ノード検証**: `map.edges` 上で現在ノードから `nodeId` への辺が存在すること。存在しないノードIDや飛び越え・後戻りは `ERR_INVALID_ACTION`（details.reason="not_adjacent"）。
+4. `selectNextNode(runState, nodeId)`（domain/dungeon）でpositionを更新し、**ノードタイプ別の状態生成をサーバーで実施**（PRNGはseed+rngCursorから継続）:
+   - BATTLE/STRONG/ELITE/BOSS: `startBattle`（domain/battle）。階層と敵種別から敵編成（1〜3体）を抽選し、`stat(floor) = base × (1 + 0.12 × (floor - 1)) × difficultyMod` と種別補正（強敵 HP×1.5,ATK×1.15 / エリート HP×2.0,ATK×1.3 / ボス HP×4.0,ATK×1.5）でステータスを確定。初回intentを `selectEnemyAction`（domain/enemy）で決定。phase="battle"。
+   - TREASURE: `generateTreasureReward`（domain/reward）でreward_tablesから抽選し `pendingReward` を設定。phase="reward_pending"。**抽選はこの時点でサーバーが確定**し、API-503は受領確定のみ行う。
+   - SHOP: `generateShopItems`（domain/reward）で商品リストを生成しrun_state.shopに格納。phase="node_action"。
+   - REST: 休憩選択肢を提示。phase="node_action"。
+   - EVENT/BLESS/HEAL/CURSE/SECRET: random_eventsから抽選（SECRETは上位報酬テーブル）し、選択肢を提示。phase="node_action"。
+   - STORY: storiesの該当話を提示し、player_story_progressへは finalize時ではなく即時記録しない（ラン内はrun_stateのみ。仮決定 DEC-030: ストーリー既読の永続反映もAPI-307に集約）。
+5. rngCursor更新を含む新run_stateで楽観ロックUPDATE（`WHERE version=:sent`。0行なら `ERR_CONFLICT_VERSION`）。階層が進んだ場合は同Txで `dungeon_run_snapshots` に世代追加し、直近3世代を超える分を削除（`saveRunProgress`）。
+6. `result` + RunView投影を返却。
+
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_INTERNAL
+
+#### API-306 リタイア
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/retire` |
+| 認証 | 要 / 権限: 全区分○ |
+| 冪等性 | **必須**（Idempotency-Key）+ status遷移（active→retiredの一方向）で二重実行防止 |
+| 関連画面 | SCR-314 → SCR-403 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | status更新+run_state確定を1トランザクション（報酬付与はここでは行わない） |
+
+リクエスト:
+```jsonc
+{ "version": 15 }
+```
+バリデーション: `z.object({ version: z.number().int().min(1) }).strict()`
+レスポンス（200）:
+```jsonc
+{
+  "result": {
+    "status": "retired",
+    "resultPreview": {
+      "reachedFloor": 6, "kills": 14,
+      "earnedSoulShards": 35, "payoutRate": 0.8, "payoutSoulShards": 28,
+      "earnedRankExp": 120
+    }
+  },
+  "run": { "runId": "run_01J8Z...", "version": 16, "state": { /* status=retired のRunView */ } }
+}
+```
+処理概要:
+1. Zod検証・セッション検証・アクティブラン取得・冪等キー照合。
+2. phase検証: 戦闘中（phase="battle"）のリタイアは不可 → `ERR_RUN_STATE_INVALID`（戦闘からは逃走=API-402で離脱後にリタイア）。
+3. `retireDungeon(runState)`（domain/dungeon）で `earned` を確定し、持ち帰り率80%（CORE_SPEC §5.6）でプレビューを計算。
+4. 楽観ロックUPDATEで `status='retired'`。**通貨・EXPの付与はまだ行わない**（API-307 finalizeで付与）。
+5. リザルトプレビューを返却。クライアントはSCR-403表示後にAPI-307を呼ぶ。
+
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_INTERNAL
+
+#### API-307 リザルト確定（クリア/敗北後の受領・重要）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/finalize` |
+| 認証 | 要 / 権限: 全区分○ |
+| 冪等性 | **必須**。Idempotency-Key + **status遷移（cleared/failed/retired → finalized の一方向）** の二重防御。finalized済みへの再実行は `ERR_REWARD_ALREADY_CLAIMED`、同一キー再送は保存レスポンス再返却 |
+| レート制限 | general 60回/分/ユーザー |
+| 関連画面 | SCR-403, SCR-404, SCR-405, SCR-406, SCR-407 → SCR-101 |
+| 関連テーブル | dungeon_runs, player_progress, player_currencies, currency_transactions, player_codex, player_achievements, player_characters, characters, achievements, battle_logs |
+| Tx境界 | **付与処理全体を1トランザクション**（下記手順4の全て+status更新。どれか失敗なら全ロールバック） |
+
+リクエスト:
+```jsonc
+{ "version": 22 }
+```
+バリデーション: `z.object({ version: z.number().int().min(1) }).strict()`
+レスポンス（200）:
+```jsonc
+{
+  "result": {
+    "finalStatus": "cleared",                    // 確定元: cleared / failed / retired
+    "rewards": {
+      "soulShards": { "earned": 180, "payoutRate": 1.0, "clearBonus": 100, "granted": 280, "balance": 1530 },
+      "rankExp": { "earned": 450, "rankBefore": 8, "rankAfter": 9, "rankUp": true },
+      "codexNewEntries": [ { "entryType": "enemy", "code": "ruin_guardian" }, { "entryType": "relic", "code": "lucky_coin" } ],
+      "achievementsUnlocked": [ { "code": "first_clear", "name": "遺跡踏破" } ],
+      "charactersUnlocked": [ { "code": "rogue_gald", "name": "ガルド" } ]  // 実績連動解放（例: total_runs_10）
+    }
+  },
+  "run": { "runId": "run_01J8Z...", "version": 23, "state": { /* status=finalized のRunView */ } }
+}
+```
+処理概要:
+1. Zod検証・セッション検証。`status IN ('cleared','failed','retired')` のランを取得（activeなら `ERR_RUN_STATE_INVALID`、存在しない/finalized済みで冪等キー不一致なら `ERR_REWARD_ALREADY_CLAIMED`、ラン自体が無ければ `ERR_NOT_FOUND`）。
+2. 冪等キー照合（再送は保存済みレスポンスを返却）。
+3. `grantPersistentRewards(runState, status)`（domain/progression）で付与内容を純関数計算:
+   - ソウルシャード: `earned.soulShards` × 持ち帰り率（クリア100%+クリアボーナス / リタイア80% / 敗北50%、CORE_SPEC §5.6）。
+   - ランクEXP: `earned.rankExp` を加算し、`expToRank(R) = 100 × R^1.8` でランクアップ判定（上限50）。
+   - 図鑑: ラン中に遭遇した敵・取得したスキル/レリック/装備をplayer_codex（entry_type別）へ新規登録分だけ抽出。
+   - 実績: 累計統計（総ラン数・クリア数・撃破数等）更新後の解除判定（`evaluateAchievements`）。実績連動のキャラ解放（rogue_gald=累計ラン10回）もここで判定。
+   - ストーリー既読反映（DEC-030）。
+4. **1トランザクションで一括付与**:
+   1. `UPDATE dungeon_runs SET status='finalized', version=version+1, run_state=... WHERE id=? AND version=:sent AND status IN ('cleared','failed','retired')` — **0行なら即ロールバックし `ERR_CONFLICT_VERSION`（version不一致）または `ERR_REWARD_ALREADY_CLAIMED`（status不一致=先行finalize）を判別して返す。この条件付きUPDATEが二重付与防止の最終防衛線**。
+   2. player_currencies加算 + currency_transactions記録（reason="run_finalize", run_id付き）。
+   3. player_progress更新（rank/rank_exp/統計）。
+   4. player_codex一括INSERT（ON CONFLICT DO NOTHING）。
+   5. player_achievements INSERT + 連動player_characters INSERT。
+   6. run_state.lastRequestにレスポンス写しを保存（冪等再送用）。
+5. battle_logsはランの戦闘終了時に随時書き込み済み（API-402）。finalizeでは触らない（保持30日、検算用に残す）。
+6. リザルト（SCR-403〜407で演出に使う全データ）を返却。
+
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_INTERNAL

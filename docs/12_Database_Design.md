@@ -846,5 +846,354 @@ erDiagram
 
 インデックス: PK(version)。最新版取得は `ORDER BY version DESC LIMIT 1`（行数僅少）。
 
+## 4.2 ユーザー永続系
+
+### 4.2.1 users（ユーザー）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ユーザーID | uuid | 不可 | ○ | | | | gen_random_uuid() | |
+| email | メールアドレス | text | 可 | | | ○ | | NULL | NULL=ゲスト（guest_accounts統合、DEC-006）。PostgreSQLはUNIQUEで複数NULL許容 |
+| password_hash | パスワードハッシュ | text | 可 | | | | | NULL | bcrypt。ゲストはNULL |
+| is_guest | ゲストフラグ | boolean | 不可 | | | | | true | ゲスト引き継ぎ（API-006）でfalseへ更新 |
+| role | 権限 | text | 不可 | | | | IN ('user','admin','operator','developer') | 'user' | 管理API（DEC-013土台）の認可判定 |
+| status | 状態 | text | 不可 | | | | IN ('active','withdrawn') | 'active' | 論理削除（§6） |
+| withdrawn_at | 退会日時 | timestamptz | 可 | | | | | NULL | status='withdrawn'時に設定。CHECK((status='withdrawn') = (withdrawn_at IS NOT NULL)) |
+| last_login_at | 最終ログイン | timestamptz | 可 | | | | | NULL | 休眠ゲスト削除バッチの判定用 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス:
+- PK(id) / UNIQUE(email)（ログイン検索。NULL=ゲストは索引対象外で軽量）
+- 部分INDEX `(withdrawn_at) WHERE status = 'withdrawn'`（30日後物理削除バッチの走査、§6）
+- 部分INDEX `(last_login_at) WHERE is_guest = true`（休眠ゲスト削除バッチ、仮決定 DEC-109: ゲストは最終ログインから180日で削除）
+
+### 4.2.2 user_profiles（ユーザープロフィール）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○ | users.id | | | | 1:1。ON DELETE CASCADE |
+| display_name | 表示名 | text | 不可 | | | | char_length 1〜16 | | プロフィールSCR-102 |
+| avatar_code | アバター | text | 不可 | | | | | 'default' | キャライラストから選択 |
+| title_code | 称号 | text | 可 | | | | | NULL | 実績報酬の称号（将来拡張枠） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id)。表示名の重複は許容（一意化しない。仮決定 DEC-110: 個人開発規模で名前予約管理は過剰）。
+
+### 4.2.3 user_settings（ユーザー設定）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○ | users.id | | | | 1:1。ON DELETE CASCADE |
+| bgm_volume | BGM音量 | int | 不可 | | | | 0〜100 | 50 | |
+| se_volume | SE音量 | int | 不可 | | | | 0〜100 | 50 | |
+| battle_speed | 戦闘速度 | int | 不可 | | | | IN (1,2) | 1 | 演出倍速 |
+| reduce_motion | 演出簡略化 | boolean | 不可 | | | | | false | アクセシビリティ |
+| extra | その他設定 | jsonb | 不可 | | | | | '{}' | 追加設定のスキーマレス枠（端末間同期が必要なもののみ。非重要データはLocalStorage、CORE_SPEC §10） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id)。
+
+### 4.2.4 auth_sessions（認証セッション）
+
+Auth.js JWT戦略のため、テーブルはリフレッシュトークンの失効管理に限定した最小構成（CORE_SPEC §8）。
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | セッションID | uuid | 不可 | ○ | | | | gen_random_uuid() | |
+| user_id | ユーザーID | uuid | 不可 | | users.id | | | | ON DELETE CASCADE（退会で全失効） |
+| refresh_token_hash | トークンハッシュ | text | 不可 | | | ○ | | | 平文は保存しない（SHA-256） |
+| expires_at | 有効期限 | timestamptz | 不可 | | | | | | 最大30日（CORE_SPEC §12） |
+| revoked_at | 失効日時 | timestamptz | 可 | | | | | NULL | ログアウト・強制失効 |
+| user_agent | UA | text | 不可 | | | | | '' | 不審ログイン調査用 |
+| ip_hash | IPハッシュ | text | 不可 | | | | | '' | 生IPは保持しない（プライバシー配慮） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / UNIQUE(refresh_token_hash)（トークン照合）/ INDEX(user_id)（ユーザーの全セッション失効）/ INDEX(expires_at)（期限切れ+7日削除バッチ）。
+
+### 4.2.5 password_reset_tokens（パスワード再設定トークン・将来）
+
+API-007は将来対応（メール基盤要）。スキーマのみ定義し、MVPマイグレーションには含めない。
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | uuid | 不可 | ○ | | | | gen_random_uuid() | |
+| user_id | ユーザーID | uuid | 不可 | | users.id | | | | ON DELETE CASCADE |
+| token_hash | トークンハッシュ | text | 不可 | | | ○ | | | |
+| expires_at | 有効期限 | timestamptz | 不可 | | | | | | 発行から30分 |
+| used_at | 使用日時 | timestamptz | 可 | | | | | NULL | 使い捨て |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / UNIQUE(token_hash) / INDEX(user_id)。
+
+### 4.2.6 player_progress（プレイヤー進行）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○ | users.id | | | | 1:1。ON DELETE CASCADE |
+| rank | プレイヤーランク | int | 不可 | | | | 1〜50 | 1 | 上限50（§5.9） |
+| rank_exp | ランクEXP | int | 不可 | | | | >= 0 | 0 | 現ランク内の累積。expToRank(R)=100×R^1.8 |
+| total_runs | 累計ラン数 | int | 不可 | | | | >= 0 | 0 | 実績判定・ガルド解放条件 |
+| total_clears | 累計クリア数 | int | 不可 | | | | >= 0 | 0 | |
+| total_failures | 累計敗北数 | int | 不可 | | | | >= 0 | 0 | |
+| total_retires | 累計リタイア数 | int | 不可 | | | | >= 0 | 0 | |
+| total_kills | 累計撃破数 | int | 不可 | | | | >= 0 | 0 | |
+| highest_floor | 最高到達階層 | int | 不可 | | | | 0〜10 | 0 | |
+| total_play_seconds | 累計プレイ秒 | bigint | 不可 | | | | >= 0 | 0 | リザルト時にラン時間を加算 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id)。統計列は実績condition（4.1.16）の判定元。finalizeトランザクション内で加算更新する。
+
+### 4.2.7 player_currencies（所持通貨）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○ | users.id | | | | 1:1。ON DELETE CASCADE |
+| soul_shards | ソウルシャード | bigint | 不可 | | | | >= 0 | 0 | 永続通貨。負残高はDB制約で禁止 |
+| version | 版数 | int | 不可 | | | | >= 0 | 0 | 楽観ロック（§5.4方針）。UPDATE ... WHERE version = :v |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id)。ゴールドはラン内一時通貨のためrun_state側にのみ存在し、本テーブルには持たない（§5.9）。
+残高変更は必ず currency_transactions のINSERTと同一トランザクションで行う（§5.5）。
+
+### 4.2.8 player_characters（解放キャラ）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| character_id | キャラID | int | 不可 | ○(複合2) | characters.id | | | | ON DELETE RESTRICT |
+| unlocked_at | 解放日時 | timestamptz | 不可 | | | | | now() | |
+| runs_used | 使用ラン数 | int | 不可 | | | | >= 0 | 0 | キャラ別統計（SCR-105） |
+| clears | クリア数 | int | 不可 | | | | >= 0 | 0 | |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, character_id)（行が存在=解放済み。user_id先頭のため一覧取得はPKで賄える）/ INDEX(character_id)（キャラ別解放数集計）。
+
+### 4.2.9 player_equipment（解放装備）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| equipment_id | 装備ID | int | 不可 | ○(複合2) | equipment.id | | | | ON DELETE RESTRICT |
+| unlocked_at | 解放日時 | timestamptz | 不可 | | | | | now() | 初期装備候補として選択可能に（SCR-205） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, equipment_id) / INDEX(equipment_id)。ラン内で拾った装備はrun_state管理であり本テーブルには入らない（永続解放のみ）。
+
+### 4.2.10 player_upgrades（永続強化状態）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| upgrade_node_id | 強化ノードID | int | 不可 | ○(複合2) | upgrade_nodes.id | | | | ON DELETE RESTRICT |
+| level | 購入段数 | int | 不可 | | | | >= 1 | 1 | max_levelまで。API-204でインクリメント |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, upgrade_node_id)。購入はAPI-204で「player_currencies減算 + currency_transactions記録 + 本テーブルUPSERT」を1トランザクションで実行。
+
+### 4.2.11 player_codex（図鑑、DEC-018統合）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| entry_type | エントリ種別 | text | 不可 | ○(複合2) | | | IN ('skill','relic','enemy','equipment','character') | | 5図鑑を1テーブルに統合 |
+| code | 対象コード | text | 不可 | ○(複合3) | | | | | 各マスタのcode。マスタ横断のためFKは張らずアプリで検証（仮決定 DEC-111） |
+| discovered_at | 発見日時 | timestamptz | 不可 | | | | | now() | |
+| count | カウント | int | 不可 | | | | >= 0 | 0 | 敵=撃破数、スキル/装備/レリック=取得回数 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, entry_type, code)（API-601はuser_id+entry_typeの前方一致でPKを利用）。
+更新はfinalize時にrun_state.earnedの内容から一括UPSERT（ラン中は書かない。書き込み回数削減）。
+
+### 4.2.12 player_achievements（実績進捗）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| achievement_id | 実績ID | int | 不可 | ○(複合2) | achievements.id | | | | ON DELETE RESTRICT |
+| progress | 進捗値 | int | 不可 | | | | >= 0 | 0 | condition.thresholdと比較 |
+| achieved_at | 達成日時 | timestamptz | 可 | | | | | NULL | NULL=未達成 |
+| reward_claimed_at | 報酬受領日時 | timestamptz | 可 | | | | | NULL | 実績報酬の二重受領防止 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, achievement_id) / 部分INDEX `(user_id) WHERE achieved_at IS NULL`（未達成分のみ判定対象にする走査の削減）。
+
+### 4.2.13 player_story_progress（ストーリー進行）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE |
+| story_id | ストーリーID | int | 不可 | ○(複合2) | stories.id | | | | ON DELETE RESTRICT |
+| read_at | 閲覧日時 | timestamptz | 不可 | | | | | now() | 行が存在=解放済み・閲覧済み |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, story_id)。
+
+### 4.2.14 currency_transactions（通貨増減履歴）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | bigint (identity) | 不可 | ○ | | | | 自動採番 | 大量追記のためuuidでなくbigint |
+| user_id | ユーザーID | uuid | 不可 | | users.id | | | | ON DELETE CASCADE |
+| currency | 通貨種別 | text | 不可 | | | | IN ('gold','soul_shards') | | goldはラン内ショップ購入等サーバー権威の主要増減のみ記録（残高権威はrun_state。仮決定 DEC-112）。soul_shardsは全増減を記録 |
+| amount | 増減額 | bigint | 不可 | | | | <> 0 | | 正=獲得、負=消費 |
+| balance_after | 変動後残高 | bigint | 不可 | | | | >= 0 | | soul_shards=player_currencies残高、gold=run_state上の残高 |
+| reason | 事由 | text | 不可 | | | | | | 例: run_reward / character_unlock / upgrade_purchase / shop_purchase / compensation |
+| ref_id | 参照ID | uuid | 可 | | | | | NULL | 関連エンティティ（run_id等）。多型参照のためFKなし |
+| idempotency_key | 冪等キー | text | 可 | | | ○ | | NULL | 同一キーの二重INSERTをUNIQUE違反で拒否（二重付与防止の最終防衛線、§5.11） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / UNIQUE(idempotency_key)（NULLは重複可）/ INDEX(user_id, created_at DESC)(ユーザー別履歴照会) / INDEX(created_at)（1年超過分の削除バッチ）。
+
+## 4.3 ラン一時系
+
+### 4.3.1 dungeon_runs（ダンジョンラン）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ランID | uuid | 不可 | ○ | | | | gen_random_uuid() | |
+| user_id | ユーザーID | uuid | 不可 | | users.id | 部分UNIQUE | | | ON DELETE CASCADE |
+| dungeon_code | ダンジョンコード | text | 不可 | | dungeons.code | | | | UNIQUE列へのFK。run_state内参照と揃えてcodeを採用 |
+| difficulty | 難易度 | text | 不可 | | | | IN ('normal','hard','nightmare') | 'normal' | dungeon_difficulties.codeと対応（複合一意のためFKなし、アプリ検証。仮決定 DEC-113） |
+| character_code | 使用キャラ | text | 不可 | | | | | | 統計・一覧表示用に列でも保持（詳細はrun_state.character） |
+| seed | シード | bigint | 不可 | | | | | | サーバー生成32bit seed（DEC-019）。再現性・チート検証用 |
+| status | 状態 | text | 不可 | | | | IN ('active','cleared','failed','retired','finalized') | 'active' | active→(cleared/failed/retired)→finalized（§5.11） |
+| run_state | ラン状態 | jsonb | 不可 | | | | | | CORE_SPEC §8構造（schemaVersion/map/position/character/skills/equipment/relics/items/gold/battle/pendingReward/rngCursor/earned）。finalize後はサマリのみに縮小（§5.8） |
+| version | 版数 | int | 不可 | | | | >= 0 | 0 | 楽観ロック（DEC-011）。全ラン系変更APIでWHERE version=?（§5.4） |
+| master_data_version | マスタ版数 | int | 不可 | | master_data_versions.version | | | | ラン開始時点のマスタ版を記録（§5.10）。ON DELETE RESTRICT |
+| last_floor | 到達階層 | int | 不可 | | | | 1〜10 | 1 | 一覧・統計用（run_stateを開かず参照） |
+| started_at | 開始日時 | timestamptz | 不可 | | | | | now() | |
+| ended_at | 終了日時 | timestamptz | 可 | | | | | NULL | cleared/failed/retired遷移時に設定 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス:
+- PK(id)
+- **部分UNIQUE INDEX `(user_id) WHERE status = 'active'`** — 「同時アクティブラン1つ」をDB制約で保証。アプリのチェック漏れ・並行リクエストでも二重ラン（ERR_RUN_ALREADY_ACTIVE）を物理的に阻止する本設計の要
+- INDEX(user_id, started_at DESC)（ラン履歴一覧）
+- INDEX(status, ended_at)（finalize漏れ検知・サマリ化バッチ）
+
+```sql
+-- Prismaで表現できないためSQLマイグレーションで作成
+CREATE UNIQUE INDEX uq_dungeon_runs_active_per_user
+  ON dungeon_runs (user_id) WHERE status = 'active';
+```
+
+### 4.3.2 dungeon_run_snapshots（ランスナップショット）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | bigint (identity) | 不可 | ○ | | | | 自動採番 | |
+| run_id | ランID | uuid | 不可 | | dungeon_runs.id | ○(複合1) | | | ON DELETE CASCADE（ラン削除で連動削除） |
+| generation | 世代 | int | 不可 | | | ○(複合2) | >= 1 | | UNIQUE(run_id, generation)。単調増加 |
+| run_state | ラン状態 | jsonb | 不可 | | | | | | 取得時点のrun_state全量コピー |
+| taken_reason | 取得契機 | text | 不可 | | | | | 'checkpoint' | checkpoint（階層移動時）/ battle_start / manual |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / UNIQUE(run_id, generation)（復元時は run_id で最新generationを取得）。
+
+運用: 階層移動（API-305のfloor跨ぎ）と戦闘開始時にINSERTし、同一トランザクション内で `generation <= max - 3` の行をDELETE（**直近3世代保持**）。finalize時に当該runの全スナップショットを削除。
+
+### 4.3.3 battle_logs（戦闘ログ）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | bigint (identity) | 不可 | ○ | | | | 自動採番 | |
+| run_id | ランID | uuid | 不可 | | dungeon_runs.id | | | | ON DELETE CASCADE |
+| floor | 階層 | int | 不可 | | | | 1〜10 | | |
+| node_id | ノードID | text | 不可 | | | | | | run_state.map内のノード識別子（例: f3n2） |
+| enemy_codes | 敵構成 | jsonb | 不可 | | | | | '[]' | 例: ["goblin","slime"]（1〜3体、DEC-002） |
+| turns | ターン明細 | jsonb | 不可 | | | | | '[]' | battle_turns/battle_actions統合先。[{turnNo, actor, action, damage, crit, statusApplied, hpAfter...}] |
+| result | 結果 | text | 不可 | | | | IN ('win','lose','escape') | | |
+| rng_seed_cursor | 乱数カーソル | int | 不可 | | | | >= 0 | 0 | 戦闘開始時点のPRNGカーソル（DEC-019、再現検証用） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / INDEX(run_id)（ラン単位の検証照会）/ INDEX(created_at)（30日削除バッチ、DEC-103）。
+書き込みは戦闘終了時に1回のみ（ターンごとに書かない。ラン中の戦闘途中状態はrun_state.battleが持つ）。
+
+## 4.4 運用系
+
+### 4.4.1 announcements（お知らせ）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | int (identity) | 不可 | ○ | | | | 自動採番 | |
+| title | タイトル | text | 不可 | | | | | | |
+| body | 本文 | text | 不可 | | | | | | Markdown可 |
+| category | 分類 | text | 不可 | | | | IN ('info','maintenance','update','event') | 'info' | |
+| starts_at | 掲載開始 | timestamptz | 不可 | | | | | now() | |
+| ends_at | 掲載終了 | timestamptz | 可 | | | | | NULL | NULL=無期限 |
+| is_published | 公開フラグ | boolean | 不可 | | | | | false | 下書き運用 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / INDEX(is_published, starts_at DESC)（API-104の公開中一覧取得）。
+
+### 4.4.2 maintenance_settings（メンテナンス設定）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | int | 不可 | ○ | | | id = 1 | 1 | CHECK(id=1)で単一行を強制 |
+| is_maintenance | メンテ中 | boolean | 不可 | | | | | false | trueで全APIがERR_MAINTENANCE(503)を返す（roleがoperator/developer/adminは除外） |
+| starts_at | 開始予定 | timestamptz | 可 | | | | | NULL | 事前告知表示用 |
+| ends_at | 終了予定 | timestamptz | 可 | | | | | NULL | SCR-009に表示 |
+| message | メッセージ | text | 不可 | | | | | '' | |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id)。参照頻度が高いためアプリ側で60秒キャッシュ（仮決定 DEC-114）。
+
+### 4.4.3 audit_logs（監査ログ）
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| id | ID | bigint (identity) | 不可 | ○ | | | | 自動採番 | |
+| user_id | 操作主体 | uuid | 可 | | users.id | | | NULL | ON DELETE SET NULL（監査ログは退会後も残す）。NULL=システムバッチ |
+| actor_role | 操作時権限 | text | 不可 | | | | | 'user' | 操作時点のroleを固定記録 |
+| action | 操作 | text | 不可 | | | | | | 例: user_withdraw / master_seed_apply / compensation_grant / run_force_finalize |
+| target_type | 対象種別 | text | 不可 | | | | | '' | 例: dungeon_runs |
+| target_id | 対象ID | text | 不可 | | | | | '' | uuid/int混在のためtext |
+| detail | 詳細 | jsonb | 不可 | | | | | '{}' | 変更前後値・理由等 |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(id) / INDEX(user_id, created_at DESC) / INDEX(action, created_at DESC) / INDEX(created_at)（1年削除バッチ、DEC-107）。
+
+### 4.4.4 idempotency_keys（冪等キー）
+
+ラン系変更API（API-303, 305, 306, 307, 402, 502〜508）のIdempotency-Keyヘッダ必須化（CORE_SPEC §7補足）に対応する応答キャッシュ。
+
+| カラム名 | 論理名 | データ型 | NULL | PK | FK | UNIQUE | CHECK | デフォルト | 説明 |
+|---|---|---|---|---|---|---|---|---|---|
+| user_id | ユーザーID | uuid | 不可 | ○(複合1) | users.id | | | | ON DELETE CASCADE。キーはユーザー単位で名前空間分離 |
+| key | 冪等キー | text | 不可 | ○(複合2) | | | char_length 8〜128 | | クライアント生成のUUID推奨 |
+| api_id | API識別子 | text | 不可 | | | | | | 例: API-402。別APIへの同一キー流用を検知しERR_VALIDATION |
+| request_hash | リクエストハッシュ | text | 不可 | | | | | | 同一キー+異なるボディをERR_DUPLICATE_REQUEST(409)で拒否 |
+| status_code | 応答ステータス | int | 可 | | | | | NULL | NULL=処理中（同時再送はERR_DUPLICATE_REQUEST） |
+| response | 応答ボディ | jsonb | 可 | | | | | NULL | 完了時に保存。再送時はこれをそのまま返す |
+| expires_at | 有効期限 | timestamptz | 不可 | | | | | now() + interval '24 hours' | 24時間保持（仮決定 DEC-102） |
+| created_at | 作成日時 | timestamptz | 不可 | | | | | now() | |
+| updated_at | 更新日時 | timestamptz | 不可 | | | | | now() | |
+
+インデックス: PK(user_id, key) / INDEX(expires_at)（毎時削除バッチ）。
+
+処理手順: (1) INSERTを試行 → 成功なら本処理実行後にresponseをUPDATE / (2) PK衝突ならSELECTし、完了済み→保存済みresponseを返却、処理中→ERR_DUPLICATE_REQUEST(409)。
+
 <!-- __CONT__ -->
+
 
