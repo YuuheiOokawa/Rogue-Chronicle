@@ -963,3 +963,351 @@ const selectNodeSchema = z.object({
 6. リザルト（SCR-403〜407で演出に使う全データ）を返却。
 
 エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_INTERNAL
+
+### 4.5 戦闘系
+
+#### API-401 戦闘状態取得
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET `/api/v1/runs/current/battle` |
+| 認証 | 要 / 権限: 全区分○ / 冪等性: GET |
+| 関連画面 | SCR-302 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | 読み取りのみ |
+
+レスポンス（200）:
+```jsonc
+{
+  "version": 12,
+  "battle": {
+    "nodeId": "f3n1", "turnNo": 4, "phase": "player_input",
+    "player": { "hp": 74, "maxHp": 118, "sp": 6, "maxSp": 10,
+                "statuses": [{ "code": "poison", "remainingTurns": 2 }],
+                "buffs": [{ "code": "atkUp", "value": 15, "remainingTurns": 1 }],
+                "skills": [{ "code": "flame_slash", "level": 2, "spCost": 3, "usable": true }],
+                "items": [{ "code": "potion", "count": 2 }] },
+    "enemies": [
+      { "id": "e1", "code": "goblin", "name": "ゴブリン", "hp": 30, "maxHp": 52,
+        "element": "none", "statuses": [], "buffs": [],
+        "intent": { "label": "強攻撃", "icon": "attack_heavy", "estimated": 18 } }
+    ],
+    "order": ["player", "e1"],
+    "canFlee": true
+  }
+}
+```
+処理概要: 1. セッション検証 → 2. アクティブラン取得（無ければ `ERR_NOT_FOUND`）→ 3. `phase != 'battle'` は `ERR_RUN_STATE_INVALID` → 4. 表示用View（seed・rngCursor・敵の内部行動テーブルは**含めない**）を返却。リロード復帰（SCR-302再構築）にも本APIを使用する。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INTERNAL
+
+#### API-402 行動実行（最重要）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/battle/actions` |
+| 認証 | 要 / 権限: 全区分○ |
+| 冪等性 | **必須**: `Idempotency-Key` + version楽観ロック（§3参照） |
+| 関連画面 | SCR-302, SCR-303（戦闘終了時のレベルアップ連鎖）, SCR-402（敗北） |
+| 関連テーブル | dungeon_runs, battle_logs（戦闘終了時）, dungeon_run_snapshots |
+| Tx境界 | 検証→ターン解決→run_state保存（+終了時battle_logs INSERT）を1トランザクション |
+| レート制限 | 60回/分/ユーザー |
+
+リクエスト:
+```jsonc
+{ "version": 12,
+  "action": { "type": "skill", "skillCode": "flame_slash", "targetId": "e1" } }
+```
+```ts
+const actionSchema = z.object({
+  version: z.number().int().min(0),
+  action: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('attack'), targetId: z.string().regex(/^e[1-3]$/) }),
+    z.object({ type: z.literal('skill'), skillCode: z.string().regex(/^[a-z0-9_]{1,50}$/),
+               targetId: z.string().regex(/^(e[1-3]|player)$/).optional() }),
+    z.object({ type: z.literal('guard') }),
+    z.object({ type: z.literal('item'), itemCode: z.string().regex(/^[a-z0-9_]{1,50}$/),
+               targetId: z.string().optional() }),
+    z.object({ type: z.literal('flee') }),
+  ]),
+}).strict();
+```
+レスポンス（200、戦闘継続時）:
+```jsonc
+{
+  "version": 13,
+  "logs": [
+    { "turnNo": 4, "actorId": "player", "action": "skill", "detailCode": "flame_slash",
+      "targetId": "e1", "damage": 34, "isCrit": true, "isMiss": false,
+      "hpAfter": { "player": 74, "e1": 0 } },
+    { "turnNo": 4, "actorId": "e1", "action": "enemy_action", "note": "dead_skip", "hpAfter": {} }
+  ],
+  "battle": { /* API-401と同形の最新状態 */ },
+  "battleEnded": false
+}
+```
+レスポンス（200、勝利時の追加フィールド）:
+```jsonc
+{
+  "battleEnded": true, "result": "win",
+  "reward": { "gold": 45, "exp": 60, "drops": [{ "type": "equipment", "code": "iron_sword", "rarity": "common" }] },
+  "levelUp": { "levels": 1, "pendingSkillChoices": true },  // → API-501/502へ
+  "runStatus": "active"   // ボス撃破時は "cleared" → SCR-401 → API-307へ
+}
+```
+処理概要:
+1. Zod検証・セッション検証・冪等キー確認（保存済みなら**再実行せず**保存応答を返す）。
+2. アクティブラン取得。`phase != 'battle'` → `ERR_RUN_STATE_INVALID`。version不一致 → `ERR_CONFLICT_VERSION`。
+3. **行動正当性のサーバー検証**（DEC-007。クライアント値は「選択」のみ）: スキル所持・SP残量・対象生存・アイテム所持数・逃走可否（ボス/エリート不可）。違反 → `ERR_INVALID_ACTION`。
+4. domainでターン解決: `executePlayerAction` → 生存敵ごとに `executeEnemyAction` → 状態異常tick（poison/burn/regen）→ バフ/状態異常の残ターン減算 → `checkBattleEnd`。**ダメージ・命中・クリティカル・状態異常の成否は全てサーバーのRng（seed+rngCursor）で決定**。
+5. 勝利時: `calculateBattleReward` → `gainExperience`（レベルアップ分のスキル3択キューをpendingRewardへ）→ ノードcleared → ボスなら `completeDungeon`（status='cleared'）。敗北時: `failDungeon`（status='failed'）。逃走成功時: phase='map_select'（ノード未クリア）。
+6. `saveRunProgress`（楽観ロックUPDATE+冪等応答保存）。戦闘終了時はbattle_logsへターンログ一括INSERT。
+7. logs（クライアントはこれを演出として再生するだけ）と最新状態を返す。
+
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_INTERNAL
+
+### 4.6 報酬・ノードアクション系
+
+#### API-501 レベルアップ候補取得
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET `/api/v1/runs/current/level-up` |
+| 認証 | 要 / 冪等性: GET（**保存済み候補を返すのみ。再抽選しない**） |
+| 関連画面 | SCR-303, SCR-304 |
+| 関連テーブル | dungeon_runs, skills |
+| Tx境界 | 読み取りのみ |
+
+レスポンス（200）:
+```jsonc
+{ "version": 13,
+  "pending": { "remaining": 2, "rerollRemaining": 1,
+    "choices": [
+      { "index": 0, "skillCode": "flame_slash", "isUpgrade": true,  "currentLevel": 2, "rarity": "rare" },
+      { "index": 1, "skillCode": "poison_edge", "isUpgrade": false, "rarity": "common" },
+      { "index": 2, "skillCode": "guard_stance", "isUpgrade": false, "rarity": "common" } ] } }
+```
+処理概要: 1. セッション検証 → 2. `pendingReward.type='levelup_queue'` 検証（違えば `ERR_RUN_STATE_INVALID`）→ 3. 保存済み候補を返却。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INTERNAL
+
+#### API-502 スキル選択（3択/リロール/スキップ）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/level-up/select` |
+| 認証 | 要 / 冪等性: 必須（Idempotency-Key + version） |
+| 関連画面 | SCR-303 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | 選択適用+保存を1トランザクション |
+
+リクエスト:
+```jsonc
+{ "version": 13, "action": "pick", "choiceIndex": 1 }   // "reroll" / "skip" も可
+```
+```ts
+const selectSchema = z.object({
+  version: z.number().int().min(0),
+  action: z.enum(['pick', 'reroll', 'skip']),
+  choiceIndex: z.number().int().min(0).max(2).optional(), // pick時必須
+}).strict().refine(v => v.action !== 'pick' || v.choiceIndex !== undefined);
+```
+処理概要: 1. 冪等キー・version・`pendingReward` 検証 → 2. `selectSkill`（**choices配列のindexのみ受理**。スキルコード直接指定は受け取らない=候補外選択を構造的に排除）→ 3. キュー残があれば次の3択を生成、なければphase復帰 → 4. 保存・返却。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-503 宝箱開封
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/treasure/open` |
+| 認証 | 要 / 冪等性: 必須 |
+| 関連画面 | SCR-305, SCR-309（装備ドロップ時）, SCR-310（レリック時） |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | 開封適用+保存を1トランザクション |
+
+リクエスト: `{ "version": 14 }`
+処理概要: 1. `pendingReward.type='treasure' && !claimed` 検証 → 2. **入場時に抽選保存済みの内容**を適用（開封時に再抽選しない=リロード連打で内容が変わらない）→ 3. claimed=true、装備/レリックは受領確認（API-507/508）へ、ゴールド・消耗品は即時適用 → 4. phase遷移・保存。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-504 ショップ購入
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/shop/purchase` |
+| 認証 | 要 / 冪等性: 必須（冪等キー+slotのsoldOutフラグ二重防御） |
+| 関連画面 | SCR-306 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | gold減算+付与+soldOut更新+保存を1トランザクション |
+
+リクエスト: `{ "version": 15, "slotIndex": 2 }`（`z.number().int().min(0).max(4)`。売却は `{ "sell": { "equipmentCode": "..." } }`）
+処理概要: 1. 現在ノード=SHOP検証 → 2. `purchaseShopItem`（soldOut→`ERR_REWARD_ALREADY_CLAIMED`、gold不足→`ERR_INSUFFICIENT_GOLD`。**価格はサーバー保存値。クライアントから金額を受け取らない**）→ 3. 保存・返却（更新後gold・品揃え）。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INSUFFICIENT_GOLD / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-505 休憩実行
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/rest` |
+| 認証 | 要 / 冪等性: 必須（ノードcleared化で二重実行を拒否） |
+| 関連画面 | SCR-307 |
+| 関連テーブル | dungeon_runs |
+| Tx境界 | 適用+保存を1トランザクション |
+
+リクエスト: `{ "version": 16, "choice": "heal" }`（`z.enum(['heal','upgrade_skill'])`。upgrade_skill時は `skillCode` 必須=所持スキル検証）
+処理概要: 1. 現在ノード=REST・未使用検証 → 2. heal: HP50%回復（maxHp超過なし）/ upgrade_skill: 所持スキルLv+1（Lv3上限→`ERR_INVALID_ACTION`）→ 3. ノードcleared、phase='map_select'、保存。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-506 イベント選択
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/event/choose` |
+| 認証 | 要 / 冪等性: 必須 |
+| 関連画面 | SCR-308 |
+| 関連テーブル | dungeon_runs, random_events, random_event_choices |
+| Tx境界 | 結果抽選+適用+保存を1トランザクション |
+
+リクエスト: `{ "version": 17, "choiceIndex": 0 }`（`z.number().int().min(0).max(2)`）
+処理概要: 1. 現在ノードがイベント系（EVENT/BLESS/HEAL/CURSE/STORY/SECRET）で未処理か検証 → 2. `executeRandomEvent`（**結果の確率抽選はサーバーRng**）→ 3. outcome（結果テキスト・増減値）と最新状態を返却。付与系（レリック等）はpendingReward経由でAPI-507/508へ。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-507 装備変更（ラン内）
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/equipment` |
+| 認証 | 要 / 冪等性: 必須 |
+| 関連画面 | SCR-309, SCR-312 |
+| 関連テーブル | dungeon_runs, equipment |
+| Tx境界 | 装備適用+ステータス再計算+保存を1トランザクション |
+
+リクエスト: `{ "version": 18, "action": "equip", "equipmentCode": "iron_sword" }`（`action: z.enum(['equip','discard'])`。equipはラン内所持品のみ=未所持→`ERR_INVALID_ACTION`）
+処理概要: 1. 所持検証 → 2. スロット（weapon/armor/accessory）へ装着、旧装備は所持品へ → 3. ステータス再計算（基礎値+装備加算、得意武器+10%）→ 4. 保存。戦闘中（phase='battle'）は変更不可（`ERR_RUN_STATE_INVALID`）。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_INVALID_ACTION / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+#### API-508 レリック取得確定
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | POST `/api/v1/runs/current/relic` |
+| 認証 | 要 / 冪等性: 必須 |
+| 関連画面 | SCR-310 |
+| 関連テーブル | dungeon_runs, relics |
+| Tx境界 | 取得適用+保存を1トランザクション |
+
+リクエスト: `{ "version": 19, "accept": true }`（呪い付きレリックは辞退可。accept: z.boolean()）
+処理概要: 1. `pendingReward.type='relic' && !claimed` 検証 → 2. accept=true: relics追加（**同一レリック重複不可**=既所持なら代替ゴールド付与50G、仮決定）/ false: 辞退（代替なし）→ 3. claimed=true、phase復帰、保存。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_STATE_INVALID / ERR_REWARD_ALREADY_CLAIMED / ERR_CONFLICT_VERSION / ERR_DUPLICATE_REQUEST / ERR_INTERNAL
+
+### 4.7 図鑑・設定系
+
+#### API-601 図鑑取得
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET `/api/v1/codex?type=skill|relic|enemy|equipment|character` |
+| 認証 | 要 / 冪等性: GET |
+| 関連画面 | SCR-108, SCR-109, SCR-110 |
+| 関連テーブル | player_codex, skills, relics, enemies, equipment, characters |
+| Tx境界 | 読み取りのみ |
+
+レスポンス（200）: マスタ全件（発見済み=詳細、未発見=シルエット+「???」）と発見率。`type` 未指定は全種サマリ。
+処理概要: 1. セッション検証 → 2. マスタとplayer_codexをLEFT JOIN相当で結合（**未発見エントリの詳細データ（数値・効果）は返さない**）→ 3. 返却。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_INTERNAL
+
+#### API-602 設定取得 / API-603 設定更新
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET / PUT `/api/v1/settings` |
+| 認証 | 要 / 冪等性: GETは常時、PUTは全項目上書きのため自然冪等 |
+| 関連画面 | SCR-116 |
+| 関連テーブル | user_settings |
+| Tx境界 | 単一UPDATE |
+
+PUTリクエスト:
+```jsonc
+{ "battleSpeed": 2, "damageDisplay": true, "screenShake": false, "colorAssist": true }
+```
+```ts
+const settingsSchema = z.object({
+  battleSpeed: z.union([z.literal(1), z.literal(2)]),
+  damageDisplay: z.boolean(), screenShake: z.boolean(), colorAssist: z.boolean(),
+}).strict();
+```
+処理概要: GET=user_settings取得（無ければデフォルト生成）。PUT=Zod検証→upsert。**ゲーム進行に影響する値は含めない**（演出設定のみ。チート面の検証対象外にできる）。
+エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_INTERNAL
+
+#### API-604 セーブデータ取得
+
+| 項目 | 内容 |
+|---|---|
+| メソッド/パス | GET `/api/v1/save` |
+| 認証 | 要 / 冪等性: GET |
+| 関連画面 | SCR-001（起動時）, SCR-101 |
+| 関連テーブル | dungeon_runs, player_progress, player_currencies |
+| Tx境界 | 読み取りのみ |
+
+処理概要: 起動時の一括状態取得。`{ hasActiveRun, runSummary(あれば階層・キャラ・phase), player(rank/currencies), maintenance }` を返す。実体はAPI-304+API-102の集約ビュー（**API-304と統合可、仮決定: MVPでは本APIを実装しAPI-304は内部共用**）。
+エラー: ERR_AUTH_UNAUTHORIZED / ERR_MAINTENANCE / ERR_INTERNAL
+
+---
+
+## 5. 戦闘1ターンの往復実例（サーバー権威の具体像）
+
+クライアントが送るのは「スキルで e1 を攻撃する」という**選択だけ**であり、数値は一切送らない。
+
+```
+→ POST /api/v1/runs/current/battle/actions
+  Idempotency-Key: 018f3a2e-7c41-7b2a-9f10-1a2b3c4d5e6f
+  { "version": 12, "action": { "type": "skill", "skillCode": "flame_slash", "targetId": "e1" } }
+
+（サーバー内: 冪等キー確認 → version検証 → スキル所持/SP検証 → Rng復元(seed, rngCursor=41)
+  → 命中判定(hit 95%) → クリ判定(5%) → ダメージ式 → 敵行動(intent実行) → poison tick
+  → 終了判定 → rngCursor=47で保存 → version=13）
+
+← 200
+{
+  "version": 13,
+  "logs": [
+    { "turnNo": 4, "actorId": "player", "action": "skill", "detailCode": "flame_slash",
+      "targetId": "e1", "damage": 34, "isCrit": false, "isMiss": false,
+      "hpAfter": { "player": 74, "e1": 18 } },
+    { "turnNo": 4, "actorId": "e1", "action": "enemy_action", "detailCode": "goblin_attack",
+      "targetId": "player", "damage": 12, "isCrit": false, "isMiss": false,
+      "hpAfter": { "player": 62, "e1": 18 } },
+    { "turnNo": 4, "actorId": "player", "action": "status_tick", "detailCode": "poison",
+      "damage": 9, "hpAfter": { "player": 53, "e1": 18 } }
+  ],
+  "battle": { "turnNo": 5, "phase": "player_input", "enemies": [ { "id": "e1", "hp": 18,
+    "intent": { "label": "攻撃", "icon": "attack", "estimated": 12 } } ], "order": ["player", "e1"] },
+  "battleEnded": false
+}
+```
+
+クライアントは `logs` を順に演出再生（倍速設定はここの再生速度のみ変更）し、`battle` で画面を最新化する。
+通信断で応答を受け損ねた場合は**同一Idempotency-Key**で再送すれば、保存済みの同一応答が返り、ターンが二重に進むことはない。
+
+---
+
+## 未決事項
+
+- API-604とAPI-304の統合可否（現仮決定: API-604を実装しAPI-304は内部共用）。実装時のクライアント都合で最終判断（ISSUE-014候補）。
+- レート制限のストア: Vercelサーバーレスではインメモリ不可のため、MVPはDB（idempotency_keys同様の軽量テーブル）かUpstash Redis無料枠のどちらかを選定する（ISSUE-015候補。仮決定: DBベースの固定ウィンドウ方式）。
+- API-508の既所持レリック代替（ゴールド50）は仮決定。抽選側で既所持を除外できれば不要になる。
+- WebSocket/SSEは全面不採用（ターン制のため不要）。将来の非同期要素（フレンド等）導入時に再検討。
+
+## 実装時の注意点
+
+- 全ラン系変更APIは「冪等キー確認 → version検証 → 正当性検証 → domain解決 → saveRunProgress」の順序を**共通ミドルウェア/ヘルパで統一実装**し、API個別実装での順序ミスを防ぐこと。
+- レスポンスに seed / rngCursor / 敵の内部行動テーブル / 未開封のpendingReward内容を**絶対に含めない**（情報チートの防止）。
+- Zodスキーマは `.strict()` を必須とし、未知フィールドを拒否する。
+- エラーレスポンスの `details` にスタックトレースや内部SQL・テーブル名を含めない（22_Security_Design.md）。
+- OpenAPI定義（zod-to-openapi）を実装フェーズで生成し、本書の表と乖離しないようCIで検証することを推奨。
+
+## 関連設計書
+
+- [12_Database_Design.md](./12_Database_Design.md) — テーブル定義・楽観ロック・冪等キー
+- [15_Save_Data_Design.md](./15_Save_Data_Design.md) — run_state構造・保存/再開
+- [20_Detailed_Design.md](./20_Detailed_Design.md) — 各APIが呼ぶdomain関数の仕様
+- [14_Authentication_Design.md](./14_Authentication_Design.md) — 認証・セッション
+- [22_Security_Design.md](./22_Security_Design.md) — 不正対策の全体像
+- [21_Test_Design.md](./21_Test_Design.md) — APIテストケース

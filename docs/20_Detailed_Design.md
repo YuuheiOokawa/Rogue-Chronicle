@@ -688,4 +688,594 @@ sequenceDiagram
 5. ネットワーク断でクライアントが応答を受け取れなかった場合、同一キーで再送すれば手順2で前回応答が返り、状態は二重に進まない。
 
 ---
-<!-- CHUNK2 -->
+
+# 第2部 ゲームロジック関数仕様（src/domain/）
+
+## 2.0 共通原則と共有型定義
+
+**原則（全関数共通）**
+1. domain層の関数は**純粋関数**とする。DBアクセス・`fetch`・`Date.now()`・`Math.random()` の直接使用を禁止する。
+2. 乱数は必ず `Rng` インターフェースを引数注入する（DEC-019）。現在時刻が必要な場合は `now: Date` を引数で受け取る。
+3. 引数の `RunState` / `BattleState` は**変更せず**、更新後の新しいオブジェクトを返す（イミュータブル）。
+4. 業務エラーは `AppError(errorCode)` をthrowする。RouteHandlerが共通エラー形式へ変換する。
+5. トランザクション・冪等性はUseCase層の責務。domain関数自体は副作用を持たないため常に再実行安全。
+
+```typescript
+// src/domain/shared/types.ts（全関数で共有）
+export type Element = 'none' | 'fire' | 'water' | 'wind';
+export type NodeType =
+  | 'BATTLE' | 'STRONG' | 'ELITE' | 'BOSS' | 'TREASURE' | 'SHOP' | 'REST'
+  | 'EVENT' | 'BLESS' | 'HEAL' | 'CURSE' | 'STORY' | 'SECRET';
+export type RunPhase = 'map_select' | 'node_action' | 'battle' | 'reward_pending';
+export type StatusCode = 'poison' | 'burn' | 'paralysis' | 'stun' | 'weaken';
+export type BuffCode =
+  | 'atkUp' | 'atkDown' | 'defUp' | 'defDown' | 'spdUp' | 'spdDown' | 'critUp' | 'regen';
+
+export interface Rng {
+  next(): number;                 // [0,1) 一様乱数（mulberry32）
+  int(min: number, max: number): number;          // [min,max] 整数
+  pick<T>(arr: readonly T[]): T;
+  weighted<T>(items: readonly { item: T; weight: number }[]): T;
+  readonly cursor: number;        // 消費数。処理後 run_state.rngCursor へ書き戻す
+}
+// createRng(seed: number, cursor: number): Rng — seedから復元し cursor 回空読みして再現
+
+export interface Stats {
+  maxHp: number; atk: number; def: number; spd: number;
+  critRate: number; critDmg: number; eva: number; acc: number;
+  statusRes: number; elemRes: Partial<Record<Element, number>>;
+}
+export interface StatusState { code: StatusCode; remainingTurns: number }
+export interface BuffState { code: BuffCode; value: number; remainingTurns: number }
+
+export interface ActorState {
+  id: string;                     // 'player' | 'e1' | 'e2' | 'e3'
+  side: 'player' | 'enemy';
+  code: string;                   // キャラ/敵マスタcode
+  element: Element;
+  stats: Stats;                   // 装備・永続強化・レベル適用後の基礎値
+  hp: number; sp: number; maxSp: number;   // 敵はsp未使用(0)
+  statuses: StatusState[];
+  buffs: BuffState[];
+  guarding: boolean;              // 防御選択中（次の被弾まで/ターン終了まで）
+  intent?: { actionCode: string; label: string; estimated?: number }; // 敵のみ
+  alive: boolean;
+}
+
+export interface ActionLogEntry {
+  turnNo: number; actorId: string;
+  action: 'attack' | 'skill' | 'guard' | 'item' | 'flee' | 'enemy_action' | 'status_tick';
+  detailCode?: string;            // スキル/アイテム/敵行動code
+  targetId?: string;
+  damage?: number; isCrit?: boolean; isMiss?: boolean; healed?: number;
+  statusApplied?: StatusCode; buffApplied?: BuffCode;
+  hpAfter: Record<string, number>;
+  note?: string;                  // 'fled_success' | 'phase_change' 等
+}
+
+export interface BattleState {
+  nodeId: string; turnNo: number;
+  actors: ActorState[];
+  order: string[];                // このターンの行動順（actorId）
+  phase: 'player_input' | 'ended';
+  result?: 'win' | 'lose' | 'fled';
+  bossPhase?: 1 | 2 | 3;          // ボス戦のみ
+}
+
+export interface MapNode { id: string; floor: number; type: NodeType; next: string[] }
+export interface DungeonMap { seed: number; floors: MapNode[][]; }
+
+export interface PendingReward {
+  type: 'skill_choice' | 'treasure' | 'relic' | 'equipment' | 'event_result' | 'levelup_queue';
+  choices: unknown[];             // typeごとのZodスキーマで検証（15_Save_Data_Design.md）
+  rerollRemaining?: number;
+  claimed: boolean;
+}
+
+export interface RunState { /* CORE SPEC §8 の構造。schemaVersion/map/position/character/
+  skills/equipment/relics/items/gold/battle?/pendingReward?/rngCursor/earned/lastRequest? */ }
+```
+
+以下、各関数を「目的 / 引数 / 戻り値 / 処理手順 / 例外 / トランザクション / 冪等性 / テスト観点 / 疑似コード」で定義する。
+配置は `src/domain/` 配下（11_Module_Design.md のモジュール対応に従う）。
+
+---
+
+## 2.1 generateDungeonSeed（dungeon/）
+
+- **目的**: ランのマップ生成・全抽選の起点となる32bitシードを生成する。
+- **引数**: `entropy: number`（UseCaseが `crypto.getRandomValues` で取得した値を注入。domain内で乱数源を持たないため）
+- **戻り値**: `number`（uint32、1以上）
+- **処理手順**: 1) `entropy >>> 0` で32bit化 2) 0の場合は1へ補正（seed=0はPRNG退化のため）
+- **例外**: なし
+- **トランザクション**: 不要 / **冪等性**: 同一entropyに対し決定的
+- **テスト観点**: (1)常に1〜2^32-1 (2)同一入力で同一出力 (3)0入力の補正
+- **疑似コード**:
+```typescript
+export function generateDungeonSeed(entropy: number): number {
+  const seed = entropy >>> 0;
+  return seed === 0 ? 1 : seed;
+}
+```
+
+## 2.2 generateDungeonMap（dungeon/）★詳細
+
+- **目的**: シードからノード選択型マップ（10階層・列グラフ）を決定的に生成する（DEC-003, §CORE 5.6）。
+- **引数**: `seed: number`, `config: DungeonGenerationConfig`（dungeons.generation_config: 階層数10、階層あたり2〜4ノード、ノードタイプ重み表、制約）, `rng: Rng`（seedから新規作成したもの）
+- **戻り値**: `DungeonMap`
+- **処理手順**:
+  1. 階層1に `BATTLE` 1ノード、階層10に `BOSS` 1ノードを固定生成。
+  2. 階層2〜9の各階層のノード数を `rng.int(2, 4)` で決定。
+  3. エッジ生成: 各階層の各ノードから次階層のノードへ1〜3本接続。位置近傍（インデックス差±1）を優先し、(a)全ノードが少なくとも1本の入次数・出次数を持つ (b)階層10へ全パスが到達できる ことを保証する。
+  4. タイプ割当: 制約充足方式。先に確定枠（階層5・9に REST を各1、マップ全体で SHOP 1〜2、STORY はストーリー進行に応じ0〜1）を配置し、残りを階層帯別重み表から `rng.weighted` で抽選。制約違反（ELITEが階層3未満 / 同一タイプが同一パス上に3連続）は再抽選（最大20回、超過時はBATTLEへフォールバック）。
+  5. SECRET: 10%判定で任意の階層2〜8の1ノードを SECRET に置換。
+  6. 検証: BOSSへの到達可能性をBFSで確認。失敗時は手順3からリトライ（最大5回。全滅は設計上ほぼ不可能だが、超過時は決定的フォールバック形状=各階層3ノード全接続を採用）。
+- **例外**: `ERR_INTERNAL`（フォールバックも失敗した場合のみ。実質発生しない）
+- **トランザクション**: 不要（純粋関数。保存はstartDungeonRunのUseCaseが行う）
+- **冪等性**: 同一seed・同一configで完全同一のマップ（再現性テストの根幹）
+- **テスト観点**: (1)同一seedで同一マップ (2)1000シードでBOSS到達可能率100% (3)階層5・9にREST存在率100% (4)SHOP数1〜2 (5)ELITEが階層1・2に出ない (6)同一パス3連続なし (7)ノード数が2〜4
+- **疑似コード**:
+```typescript
+export function generateDungeonMap(seed: number, config: GenConfig, rng: Rng): DungeonMap {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const floors: MapNode[][] = [];
+    floors[0] = [node('f1n0', 1, 'BATTLE')];
+    for (let f = 2; f <= 9; f++) {
+      const count = rng.int(2, 4);
+      floors[f - 1] = range(count).map(i => node(`f${f}n${i}`, f, 'UNASSIGNED'));
+    }
+    floors[9] = [node('f10n0', 10, 'BOSS')];
+
+    connectEdges(floors, rng);            // 手順3: 近傍優先・入出次数>=1を保証
+    assignFixedTypes(floors, rng, config); // 手順4前段: REST(5,9), SHOP1〜2
+    assignWeightedTypes(floors, rng, config); // 手順4後段: 重み抽選+制約チェック(最大20回)
+    maybePlaceSecret(floors, rng);         // 手順5: 10%
+    if (reachesBoss(floors)) return { seed, floors };
+  }
+  return deterministicFallback(seed);      // 各階層3ノード全接続
+}
+```
+
+## 2.3 selectNextNode（dungeon/）
+
+- **目的**: プレイヤーが選択したノードへの移動を検証し、ノード入場結果（戦闘生成・報酬抽選等）を含む新しいRunStateを返す（API-305の中核）。
+- **引数**: `runState: RunState`, `nodeId: string`, `masters: MasterBundle`, `rng: Rng`
+- **戻り値**: `{ runState: RunState; entered: NodeEnterResult }`（entered.type別に battle開始情報 / pendingReward / イベント定義等）
+- **処理手順**:
+  1. `position.phase === 'map_select'` を検証（不一致→`ERR_RUN_STATE_INVALID`）。
+  2. `nodeId` が現在ノードの `next` に含まれるか検証（不一致→`ERR_INVALID_ACTION`。**隣接以外への移動はここで完全に遮断**）。
+  3. `position` を更新し、ノードタイプで分岐:
+     - BATTLE/STRONG/ELITE/BOSS → `startBattle` を呼び battle を設定、phase='battle'。
+     - TREASURE → `generateTreasureReward` で pendingReward 設定、phase='reward_pending'。
+     - SHOP → `generateShopItems` で商品を run_state.shop に設定、phase='node_action'。
+     - REST/EVENT/BLESS/HEAL/CURSE/STORY/SECRET → イベント定義を提示、phase='node_action'。
+  4. `rngCursor` を更新して返す。
+- **例外**: `ERR_RUN_STATE_INVALID` / `ERR_INVALID_ACTION`
+- **トランザクション**: UseCaseで楽観ロックUPDATE（1文）+ snapshot保存を同一Txで実行
+- **冪等性**: UseCaseの冪等キーで担保（再送時は保存済み応答を返却）
+- **テスト観点**: (1)隣接ノードのみ許可 (2)phase不一致拒否 (3)タイプ別に正しい状態遷移 (4)同一rngCursorから同一抽選結果
+
+## 2.4 startDungeonRun（dungeon/）
+
+- **目的**: 出撃条件を検証し、初期RunState（マップ・キャラ初期値・永続強化適用）を構築する（API-303の中核）。
+- **引数**: `input: { characterCode, dungeonCode, difficulty, startEquipment[] }`, `playerData: { unlockedCharacters, unlockedEquipment, upgrades }`, `masters: MasterBundle`, `seed: number`
+- **戻り値**: `RunState`（phase='map_select'、階層1ノードを踏破済み扱いにするかは「階層1=開始戦闘」のためBATTLE入場から開始（仮決定: 初期位置は階層1ノードで phase='battle'））
+- **処理手順**: 1) キャラ・装備の解放済み検証（未解放→`ERR_INVALID_ACTION`） 2) `generateDungeonMap` 3) キャラ初期ステータスに永続強化（upgrade_nodes効果）と初期装備を適用 4) 初期スキル・初期アイテム（ポーション1）・初期ゴールド（0+永続強化分）を設定 5) `earned` をゼロ初期化
+- **例外**: `ERR_INVALID_ACTION` / `ERR_VALIDATION`
+- **トランザクション**: UseCaseで「アクティブラン不存在チェック→INSERT」。**同時開始はDBの部分UNIQUEインデックス（user_id WHERE status='active'）が最終防衛線**（違反→`ERR_RUN_ALREADY_ACTIVE`）
+- **冪等性**: 冪等キー。同一キー再送は作成済みランを返す
+- **テスト観点**: (1)未解放キャラ拒否 (2)アクティブラン重複拒否 (3)永続強化がステータスへ正しく反映 (4)同一seedで同一初期状態
+
+## 2.5 resumeDungeonRun（dungeon/）
+
+- **目的**: 保存済みRunStateから、クライアントが復帰すべき画面と表示用状態を導出する（API-304）。
+- **引数**: `runState: RunState`
+- **戻り値**: `{ resumeTo: 'map' | 'battle' | 'reward' | 'node_action' | 'result'; view: ClientRunView }`
+- **処理手順**: 1) `validateRunState` 2) phase→復帰先のマッピング（map_select→map / battle→battle / reward_pending→reward / node_action→node_action、status≠active→result） 3) クライアント表示に不要な内部情報（seed・rngCursor・敵の未公開行動テーブル）を**除外**したViewを構築
+- **例外**: `ERR_RUN_STATE_INVALID`（破損検知→スナップショット復旧フローへ）
+- **トランザクション**: 読み取りのみ / **冪等性**: 参照系のため常に安全
+- **テスト観点**: (1)各phaseの復帰先 (2)seed等の内部情報がViewに漏れない (3)破損データでERR_RUN_STATE_INVALID
+
+## 2.6 startBattle（battle/）
+
+- **目的**: ノードタイプと階層から敵編成を抽選し、BattleStateを生成する。
+- **引数**: `runState: RunState`, `nodeType: NodeType`, `floor: number`, `masters: MasterBundle`, `rng: Rng`
+- **戻り値**: `BattleState`
+- **処理手順**: 1) 敵編成抽選（enemies.appear_floors と nodeType で候補を絞り、BATTLE=1〜2体 / STRONG=1体(強敵補正) / ELITE=1体+随伴0〜1 / BOSS=ruin_guardian固定） 2) 階層補正 `base × (1 + 0.12 × (floor-1)) × difficultyMod` と種別補正を適用 3) プレイヤーActorState構築（現在hp/sp引き継ぎ） 4) `determineTurnOrder` 5) 各敵の初回intentを `selectEnemyAction` で抽選し設定 6) turnNo=1, phase='player_input'
+- **例外**: `ERR_INTERNAL`（該当敵なし=マスタ不備）
+- **トランザクション**: 不要（selectNextNodeのTxに含まれる） / **冪等性**: 同上
+- **テスト観点**: (1)階層・種別補正の数値一致 (2)BOSSノードで必ずボス (3)intentが必ず設定される (4)同一rngで同一編成
+
+## 2.7 determineTurnOrder（battle/）
+
+- **目的**: ターンの行動順を決定する。
+- **引数**: `actors: ActorState[]`
+- **戻り値**: `string[]`（actorId、行動順）
+- **処理手順**: 1) alive のみ対象 2) 実効spd（buff/デバフ適用後）降順 3) 同値は player 優先 4) 敵同士の同値は actors 配列順（決定的）
+- **例外**: なし / **トランザクション**: 不要 / **冪等性**: 決定的
+- **テスト観点**: (1)spd降順 (2)同値でplayer先行 (3)死亡者除外 (4)spdUp/Downの反映
+- **疑似コード**:
+```typescript
+export function determineTurnOrder(actors: ActorState[]): string[] {
+  return actors
+    .filter(a => a.alive)
+    .sort((a, b) => {
+      const d = effectiveSpd(b) - effectiveSpd(a);
+      if (d !== 0) return d;
+      if (a.side !== b.side) return a.side === 'player' ? -1 : 1;
+      return 0; // Array.prototype.sortは安定ソート
+    })
+    .map(a => a.id);
+}
+```
+
+## 2.8 calculateDamage（battle/）★詳細
+
+- **目的**: CORE SPEC §5.4 のダメージ式を単一実装として提供する（**この関数以外でダメージ計算をしない**）。
+- **引数**: `attacker: ActorState`, `defender: ActorState`, `skillMult: number`, `element: Element`, `rng: Rng`
+- **戻り値**: `{ damage: number; isCrit: boolean; isMiss: boolean }`
+- **処理手順**: 1) `calculateEvasion` で命中判定。外れたら damage=0, isMiss=true で終了 2) `calculateCritical` でクリ判定 3) 式 `max(1, floor(atk × skillMult × 100/(100+def) × elemMod × critMod × rand(0.90〜1.10)))` を適用 4) elemMod: 有利1.25/不利0.75/等倍1.0、さらに defender.elemRes[element]%（上限50）で軽減 5) defender.guarding なら最終値を50%（切り捨て）
+- **例外**: なし / **トランザクション**: 不要 / **冪等性**: 同一rng状態で決定的
+- **テスト観点**: (1)最低1ダメージ保証（isMiss除く） (2)乱数境界0.90/1.10 (3)属性3すくみ表の全組合せ (4)防御50%減 (5)クリ時critDmg反映 (6)def=0とdef極大値の逓減曲線
+- **疑似コード**:
+```typescript
+const ADVANTAGE: Record<Element, Element | null> =
+  { fire: 'wind', wind: 'water', water: 'fire', none: null };
+
+export function calculateDamage(
+  attacker: ActorState, defender: ActorState,
+  skillMult: number, element: Element, rng: Rng,
+): DamageResult {
+  if (calculateEvasion(attacker, defender, rng)) {
+    return { damage: 0, isCrit: false, isMiss: true };
+  }
+  const isCrit = calculateCritical(attacker, rng);
+
+  let elemMod = 1.0;
+  if (element !== 'none') {
+    if (ADVANTAGE[element] === defender.element) elemMod = 1.25;
+    else if (ADVANTAGE[defender.element] === element) elemMod = 0.75;
+    const res = Math.min(defender.stats.elemRes[element] ?? 0, 50);
+    elemMod *= (100 - res) / 100;
+  }
+  const critMod = isCrit ? effectiveCritDmg(attacker) / 100 : 1.0;
+  const variance = 0.90 + rng.next() * 0.20;
+  const atk = effectiveAtk(attacker);        // atkUp/atkDown/burn(-10%)適用後
+  const def = effectiveDef(defender);        // defUp/defDown/weaken(-25%)適用後
+
+  let dmg = Math.floor(atk * skillMult * (100 / (100 + def)) * elemMod * critMod * variance);
+  if (defender.guarding) dmg = Math.floor(dmg * 0.5);
+  return { damage: Math.max(1, dmg), isCrit, isMiss: false };
+}
+```
+
+## 2.9 calculateCritical（battle/）
+
+- **目的**: クリティカル発動判定。
+- **引数**: `attacker: ActorState`, `rng: Rng` / **戻り値**: `boolean`
+- **処理手順**: `rng.next() * 100 < clamp(critRate + critUpバフ, 0, 100)`
+- **例外**: なし / **Tx**: 不要 / **冪等性**: 決定的
+- **テスト観点**: (1)critRate=0で常にfalse (2)100で常にtrue (3)critUpバフ加算
+
+## 2.10 calculateEvasion（battle/）
+
+- **目的**: 命中判定（falseなら命中、trueなら回避された）。
+- **引数**: `attacker: ActorState`, `defender: ActorState`, `rng: Rng` / **戻り値**: `boolean`（回避されたか）
+- **処理手順**: `hit = clamp(95 + attacker.acc - defender.eva, 50, 100)`、`rng.next()*100 >= hit` で回避
+- **例外**: なし / **Tx**: 不要 / **冪等性**: 決定的
+- **テスト観点**: (1)下限50%・上限100%のクランプ (2)eva=0,acc=0で命中95% (3)高evaでも最低50%は命中
+
+## 2.11 applyBuff / 2.12 applyDebuff（battle/）
+
+- **目的**: バフ/デバフの付与。同種は「効果値が大きい方を採用し、持続ターンは長い方」で上書き（CORE SPEC §5.3、重ね掛けによる無限強化を防止）。
+- **引数**: `actor: ActorState`, `buff: BuffState` / **戻り値**: `ActorState`（新オブジェクト）
+- **処理手順**: 1) 同codeを検索 2) なければ追加 3) あれば value=max, remainingTurns=max で置換
+- **例外**: なし / **Tx**: 不要 / **冪等性**: 同一入力で決定的（同じバフを2回適用しても結果同一＝関数自体が冪等）
+- **テスト観点**: (1)新規付与 (2)弱い値で上書きされない (3)持続の延長 (4)applyDebuffはvalueが負方向である以外同一実装であること
+- **疑似コード**:
+```typescript
+export function applyBuff(actor: ActorState, buff: BuffState): ActorState {
+  const rest = actor.buffs.filter(b => b.code !== buff.code);
+  const prev = actor.buffs.find(b => b.code === buff.code);
+  const merged = prev
+    ? { code: buff.code, value: Math.max(prev.value, buff.value),
+        remainingTurns: Math.max(prev.remainingTurns, buff.remainingTurns) }
+    : buff;
+  return { ...actor, buffs: [...rest, merged] };
+}
+export const applyDebuff = applyBuff; // デバフはvalue符号/効果方向で表現（同一マージ規則）
+```
+
+## 2.13 applyStatusEffect（battle/）
+
+- **目的**: 状態異常の付与判定と適用。
+- **引数**: `target: ActorState`, `code: StatusCode`, `baseRate: number`, `rng: Rng`
+- **戻り値**: `{ target: ActorState; applied: boolean }`
+- **処理手順**: 1) 成功率 `baseRate × (100 - statusRes) / 100` 2) `rng` で判定 3) 成功時、既存同種があれば remainingTurns を規定値へリセット（重複延長のみ、効果は重複しない） 4) 継続ターンは §CORE 5.3 の表（poison3/burn2/paralysis2/stun1/weaken3）
+- **例外**: なし / **Tx**: 不要 / **冪等性**: 決定的
+- **テスト観点**: (1)statusRes=100で常に失敗 (2)重複時はターンリセットのみ (3)ボスへのstun無効化（enemies側のstatusRes=100で表現、特殊分岐を作らない）
+
+## 2.14 executePlayerAction（battle/）★詳細
+
+- **目的**: プレイヤーの1行動（攻撃/スキル/防御/アイテム/逃走）の正当性を検証し、行動を解決する（API-402の中核前半）。
+- **引数**: `battle: BattleState`, `run: RunState`, `action: PlayerAction`, `masters: MasterBundle`, `rng: Rng`
+  ```typescript
+  type PlayerAction =
+    | { type: 'attack'; targetId: string }
+    | { type: 'skill'; skillCode: string; targetId?: string }
+    | { type: 'guard' }
+    | { type: 'item'; itemCode: string; targetId?: string }
+    | { type: 'flee' };
+  ```
+- **戻り値**: `{ battle: BattleState; run: RunState; logs: ActionLogEntry[] }`
+- **処理手順**:
+  1. 検証: phase='player_input' / 麻痺30%・スタンは行動キャンセル（logへ記録し成立扱い） / skill→**所持スキルか**・**SP足りるか**・対象生存 / item→所持数>0 / flee→ボス・エリート戦は不可。違反は `ERR_INVALID_ACTION`。
+  2. 行動解決:
+     - attack: `calculateDamage(skillMult=1.0)` + SP+1回復。
+     - skill: SP減算→skill_effectsの効果行を順に解決（effect_typeごとのハンドラ表: damage/damage_aoe/heal/buff/debuff/status/sp_gain/shield/lifesteal/revive_guard）。
+     - guard: guarding=true、SP+2。
+     - item: 効果適用し items から1減算。
+     - flee: 成功率 `clamp(50 + (自spd - 敵最速spd) × 2, 20, 90)`。成功→result='fled'（報酬なしでマップへ戻る。ノードは未クリアのまま）。
+  3. 撃破判定・logs生成。`checkBattleEnd` は呼び出し側（UseCase）が敵行動後にまとめて評価する。
+- **例外**: `ERR_INVALID_ACTION` / `ERR_RUN_STATE_INVALID`
+- **Tx**: API-402のUseCase Txに含まれる / **冪等性**: 冪等キー（UseCase）
+- **テスト観点**: (1)未所持スキル拒否 (2)SP不足拒否 (3)死亡対象への攻撃拒否 (4)ボス戦flee拒否 (5)麻痺30%の乱数再現 (6)スキル効果行が定義順に解決される
+- **疑似コード**:
+```typescript
+export function executePlayerAction(
+  battle: BattleState, run: RunState, action: PlayerAction,
+  masters: MasterBundle, rng: Rng,
+): PlayerActionResult {
+  const player = getActor(battle, 'player');
+  assertPhase(battle, 'player_input');
+
+  if (isIncapacitated(player, rng)) {           // stun / paralysis(30%)
+    return withLog(battle, run, skipLog(player));
+  }
+  switch (action.type) {
+    case 'attack': {
+      const target = getAliveEnemy(battle, action.targetId);   // 不在→ERR_INVALID_ACTION
+      const r = calculateDamage(player, target, 1.0, weaponElement(run), rng);
+      return resolveHit(battle, run, player, target, r, { spGain: +1 });
+    }
+    case 'skill': {
+      const skill = getOwnedSkill(run, action.skillCode);       // 未所持→ERR_INVALID_ACTION
+      if (player.sp < skill.spCost) throw new AppError('ERR_INVALID_ACTION', 'SP不足');
+      const leveled = scaleByLevel(skill, run);                 // スキル強化Lv反映
+      return resolveSkillEffects(battle, run, player, leveled, action.targetId, rng);
+    }
+    case 'guard':
+      return withLog(setGuard(battle, player, { spGain: +2 }), run, guardLog(player));
+    case 'item':
+      return resolveItem(battle, run, action.itemCode, rng);    // 所持0→ERR_INVALID_ACTION
+    case 'flee': {
+      assertFleeAllowed(battle);                                // BOSS/ELITE→ERR_INVALID_ACTION
+      const p = clamp(50 + (effectiveSpd(player) - maxEnemySpd(battle)) * 2, 20, 90);
+      return rng.next() * 100 < p
+        ? endBattle(battle, run, 'fled')
+        : withLog(battle, run, fleeFailLog(player));
+    }
+  }
+}
+```
+
+## 2.15 executeEnemyAction（battle/enemy）
+
+- **目的**: 敵1体の行動を解決する。**表示済みintentをそのまま実行**する（予告と実行の一致保証、仮決定）。
+- **引数**: `battle: BattleState`, `actorId: string`, `masters: MasterBundle`, `rng: Rng`
+- **戻り値**: `{ battle: BattleState; logs: ActionLogEntry[] }`
+- **処理手順**: 1) 行動不能判定（stun/paralysis） 2) `actor.intent.actionCode` の enemy_actions 定義を解決（damage系は `calculateDamage`、召喚は空きスロット（最大3体）へ、バフ/デバフ/状態異常は各apply関数） 3) 行動後、次ターンのintentを `selectEnemyAction` で抽選して設定 4) ボスはHP閾値でbossPhase更新・怒り付与（`applyBuff(atkUp+30%)`）
+- **例外**: `ERR_INTERNAL`（intent未設定=状態不整合）
+- **Tx**: API-402のTx内 / **冪等性**: UseCaseの冪等キー
+- **テスト観点**: (1)intentどおりの行動 (2)召喚上限3体 (3)フェーズ移行の閾値（70%/40%） (4)怒りの一回性
+
+## 2.16 selectEnemyAction（enemy/）★詳細
+
+- **目的**: 敵AIの行動決定。「条件ルール優先評価 → 重み付き抽選」の2段構成（完全ランダム禁止）。
+- **引数**: `enemy: ActorState`, `battle: BattleState`, `aiRules: EnemyAiRule[]`, `actions: EnemyAction[]`, `rng: Rng`
+- **戻り値**: `{ actionCode: string; intentLabel: string }`
+- **処理手順**:
+  1. `aiRules` を priority 昇順に評価。condition（JSONB）をevaluator表で判定: `hpBelow`（自HP割合）/ `turnMod`（nターン周期）/ `selfBuffMissing` / `allyCount` / `targetStatusMissing` / `phaseIs`。
+  2. 最初に合致した priority グループ内の候補から weight で抽選。
+  3. どのルールも合致しなければ、`priority = null`（基本テーブル）の行動から weight 抽選。
+  4. 同一行動の連続回数制限（同一actionCode 3連続禁止。3連続目は候補から除外、候補が空なら許容）。
+- **例外**: `ERR_INTERNAL`（基本テーブルが空=マスタ不備）
+- **Tx**: 不要 / **冪等性**: 同一rng状態で決定的
+- **テスト観点**: (1)条件合致時に必ずそのグループから選ぶ (2)priority順の先勝ち (3)重みの分布（1000回抽選の統計） (4)3連続制限 (5)未知のcondition keyはfalse扱い（前方互換）
+- **疑似コード**:
+```typescript
+const EVALUATORS: Record<string, (c: any, e: ActorState, b: BattleState) => boolean> = {
+  hpBelow: (v, e) => e.hp / e.stats.maxHp < v,
+  turnMod: (v, _e, b) => b.turnNo % v.n === v.eq,
+  selfBuffMissing: (v, e) => !e.buffs.some(x => x.code === v),
+  allyCount: (v, _e, b) => compare(aliveEnemies(b).length, v),
+  phaseIs: (v, _e, b) => b.bossPhase === v,
+};
+
+export function selectEnemyAction(
+  enemy: ActorState, battle: BattleState,
+  aiRules: EnemyAiRule[], actions: EnemyAction[], rng: Rng,
+): EnemyIntent {
+  const matched = groupByPriority(aiRules)
+    .find(group => group.rules.every(r => evaluate(r.condition, enemy, battle)));
+  let candidates = (matched?.rules ?? baseTable(aiRules))
+    .filter(r => notThreeInARow(battle, enemy, r.actionCode));
+  if (candidates.length === 0) candidates = matched?.rules ?? baseTable(aiRules);
+  const rule = rng.weighted(candidates.map(r => ({ item: r, weight: r.weight })));
+  return toIntent(rule, actions);
+}
+```
+
+## 2.17 checkBattleEnd（battle/）
+
+- **目的**: 戦闘終了判定。
+- **引数**: `battle: BattleState` / **戻り値**: `'win' | 'lose' | null`
+- **処理手順**: プレイヤー hp<=0 → 'lose'（**敗北が優先**: 同時全滅=相打ちは敗北とする、仮決定） / 敵全滅 → 'win' / それ以外 null
+- **例外**: なし / **Tx**: 不要 / **冪等性**: 決定的
+- **テスト観点**: (1)相打ちで敗北 (2)召喚残存中はwinにならない (3)fled時は本関数を経由しない
+
+## 2.18 calculateBattleReward（reward/）
+
+- **目的**: 勝利時のゴールド・EXP・ドロップを算定する。
+- **引数**: `defeated: EnemyMaster[]`, `floor: number`, `difficulty: Difficulty`, `rewardTables: RewardTable[]`, `rng: Rng`
+- **戻り値**: `{ gold: number; exp: number; drops: DropItem[] }`
+- **処理手順**: 1) `exp = Σ baseExp × (1 + 0.10 × (floor - 1)) × difficultyExpMod` 2) gold = Σ rng.int(baseGold×0.8, baseGold×1.2) × 階層係数 3) ドロップ: 敵種別率（通常10%/エリート50%/ボス100%）→ reward_tables のレア度重みで抽選
+- **例外**: なし / **Tx**: API-402のTx内 / **冪等性**: rng決定的+冪等キー
+- **テスト観点**: (1)EXP式の一致 (2)ドロップ率の統計検証 (3)ボス100%ドロップ
+
+## 2.19 gainExperience（progression/）
+
+- **目的**: EXP加算とレベルアップ回数の算定（**複数レベル一括対応**）。
+- **引数**: `character: RunCharacter`, `exp: number` / **戻り値**: `{ character: RunCharacter; levelUps: number }`
+- **処理手順**: 1) exp加算 2) `expToNext(L) = floor(20 × L^1.5)` を超える限りレベルアップ（上限20） 3) 各レベルで `levelUp` を適用 4) levelUps回数を返し、呼び出し側がスキル3択を**levelUps回ぶんキュー**に積む（pendingReward.type='levelup_queue'）
+- **例外**: なし / **Tx**: API-402のTx内 / **冪等性**: 決定的
+- **テスト観点**: (1)複数レベル一括 (2)上限20で停止しEXPは切り捨てず保持 (3)必要EXP式の境界値
+
+## 2.20 levelUp（progression/）
+
+- **目的**: 1レベル分の成長適用。
+- **引数**: `character: RunCharacter`, `growth: GrowthRates`（キャラ成長係数0.8〜1.2）
+- **戻り値**: `RunCharacter`
+- **処理手順**: maxHp+8%・atk+5%・def+5%・spd+2%（各×成長係数、切り捨て・最低+1）。**現在HPは割合維持**（全回復しない）。SPは変化なし
+- **例外**: なし / **Tx**: 同上 / **冪等性**: 決定的
+- **テスト観点**: (1)成長式 (2)HP割合維持の丸め (3)最低+1保証
+
+## 2.21 generateSkillChoices（skill/）
+
+- **目的**: レベルアップ時のスキル3択候補を抽選する。
+- **引数**: `run: RunState`, `skills: SkillMaster[]`, `rng: Rng`
+- **戻り値**: `SkillChoice[]`（3件: `{ skillCode, isUpgrade, rarity }`）
+- **処理手順**: 1) 候補プール = キャラが取得可能な汎用+固有スキルのうち「未所持」または「所持済みでLv<3（強化候補）」 2) レア度重み common60/rare30/epic10 で3件を**重複なし**抽選 3) 所持8枠が満杯なら強化候補と入替提案のみで構成 4) プールが3未満なら不足分は「HP10%回復」カードで埋める
+- **例外**: なし / **Tx**: API-402/501のTx内 / **冪等性**: 抽選結果はpendingRewardに保存され、再取得（API-501）は保存済みを返す＝**再抽選されない**
+- **テスト観点**: (1)重複なし3件 (2)レア度分布 (3)Lv3スキルが候補に出ない (4)保存済み候補の不変性
+
+## 2.22 selectSkill（skill/）
+
+- **目的**: 3択からの選択・リロール・スキップを検証適用する（API-502）。
+- **引数**: `run: RunState`, `input: { action: 'pick' | 'reroll' | 'skip'; choiceIndex?: 0|1|2 }`, `rng: Rng`
+- **戻り値**: `RunState`
+- **処理手順**: 1) `pendingReward.type='skill_choice' && !claimed` 検証 2) pick→**choices[choiceIndex]のみ**適用（候補外コード指定は不可能な入力形式にする）。新規は所持へ、強化はLv+1 3) reroll→rerollRemaining>0検証、再抽選し回数減 4) skip→HP10%回復 5) claimed=true、キューに残があれば次の3択を生成、なければphase復帰
+- **例外**: `ERR_RUN_STATE_INVALID` / `ERR_INVALID_ACTION`（index範囲外・リロール残0）/ `ERR_REWARD_ALREADY_CLAIMED`
+- **Tx**: UseCase Tx / **冪等性**: 冪等キー
+- **テスト観点**: (1)候補外選択が構造上不可能 (2)二重選択拒否 (3)リロール残管理 (4)8枠満杯時の入替
+
+## 2.23 generateTreasureReward（reward/）
+
+- **目的**: 宝箱の内容抽選（TREASURE/SECRETノード）。
+- **引数**: `floor: number`, `isSecret: boolean`, `rewardTables: RewardTable[]`, `rng: Rng`
+- **戻り値**: `PendingReward`（type='treasure'）
+- **処理手順**: 1) 区分抽選: 装備60%/ゴールド25%/消耗品15% 2) レア度: 階層帯で重み変動（7-9階層はrare以上+10%）、SECRETは1段階レア度アップ 3) 内容をpendingRewardに保存（**開封API-503時に再抽選しない**）
+- **例外**: なし / **Tx**: selectNextNodeのTx内 / **冪等性**: 保存済み内容を返すのみ
+- **テスト観点**: (1)区分確率 (2)SECRET格上げ (3)開封の冪等性
+
+## 2.24 generateShopItems（shop/）
+
+- **目的**: ショップ品揃えの生成（SHOPノード入場時）。
+- **引数**: `floor: number`, `masters: MasterBundle`, `rng: Rng`
+- **戻り値**: `ShopState`（5枠: 装備2/消耗品2/レリック1、各 `{ itemRef, price, soldOut: false }`）
+- **処理手順**: 1) 枠ごとに候補抽選 2) `price = floor(基準価格 × (1 + 0.1 × floor))` 3) run_state.shop に保存
+- **例外**: なし / **Tx**: selectNextNodeのTx内 / **冪等性**: 保存済み品揃えは再入場でも不変
+- **テスト観点**: (1)枠構成 (2)価格式 (3)品揃えの不変性
+
+## 2.25 purchaseShopItem（shop/）
+
+- **目的**: 購入の検証・適用（API-504）。
+- **引数**: `run: RunState`, `slotIndex: number` / **戻り値**: `RunState`
+- **処理手順**: 1) 現在ノードがSHOPでshopが存在 2) `soldOut=false` 検証（→`ERR_REWARD_ALREADY_CLAIMED`） 3) `gold >= price` 検証（→`ERR_INSUFFICIENT_GOLD`） 4) gold減算・アイテム付与・soldOut=true
+- **例外**: `ERR_RUN_STATE_INVALID` / `ERR_INSUFFICIENT_GOLD` / `ERR_REWARD_ALREADY_CLAIMED`
+- **Tx**: UseCase Tx / **冪等性**: 冪等キー+soldOutフラグの二重防御
+- **テスト観点**: (1)所持金不足拒否 (2)二重購入拒否 (3)減算と付与の原子性
+
+## 2.26 executeRandomEvent（event/）
+
+- **目的**: イベント選択肢の結果解決（API-506。EVENT/BLESS/HEAL/CURSE/STORY/SECRETノード）。
+- **引数**: `run: RunState`, `eventCode: string`, `choiceIndex: number`, `masters: MasterBundle`, `rng: Rng`
+- **戻り値**: `{ run: RunState; outcome: EventOutcome }`
+- **処理手順**: 1) 現在ノードのイベントとeventCode一致検証 2) choiceIndexが random_event_choices の範囲内か検証 3) 選択肢の結果テーブル（確率付き複数結果）から抽選 4) 効果適用（HP増減・gold増減・レリック/スキル/装備付与・呪い付与）。結果はoutcomeとしてログ返却 5) ノードcleared化、phase='map_select'（付与系はreward_pending経由）
+- **例外**: `ERR_INVALID_ACTION` / `ERR_RUN_STATE_INVALID`
+- **Tx**: UseCase Tx / **冪等性**: 冪等キー+ノードcleared検証
+- **テスト観点**: (1)選択肢範囲検証 (2)確率分岐の再現性 (3)HP0になる犠牲系イベントでも死亡しない（最低HP1、仮決定）
+
+## 2.27 completeDungeon / 2.28 failDungeon / 2.29 retireDungeon（dungeon/）
+
+- **目的**: ラン終了状態への遷移と `earned`（持ち帰り資産）の確定。
+- **引数**: `run: RunState`（retireのみ現在phase検証: 戦闘中リタイアは敗北扱い）
+- **戻り値**: `RunState`（status遷移: active→cleared/failed/retired。**この時点では永続付与しない**）
+- **処理手順（共通）**: 1) 状態検証（completeはBOSS撃破直後のみ/failはhp<=0のみ） 2) ソウルシャード係数適用: クリア100%+クリアボーナス50 / 敗北50% / リタイア80%（切り捨て） 3) rankExp確定（到達階層×10 + 撃破数×2 + クリアボーナス100） 4) battle/pendingRewardをクリア
+- **例外**: `ERR_RUN_STATE_INVALID`
+- **Tx**: それぞれのUseCase Tx（API-402内の敗北分岐 / API-306） / **冪等性**: status遷移の一方向性で二重実行を拒否
+- **テスト観点**: (1)係数100/80/50% (2)status一方向遷移 (3)一時データ（skills/relics/gold）が持ち帰り対象に含まれない
+
+## 2.30 grantPersistentRewards（progression/）★詳細
+
+- **目的**: finalize（API-307）時の永続報酬差分を**計算**する（DB書き込みはUseCase）。
+- **引数**: `run: RunState`, `player: PlayerPersistentData`（progress/currencies/codex/achievements/characters）, `masters: MasterBundle`
+- **戻り値**: `PersistentGrant`（適用差分の完全な記述。UseCaseはこれを機械的にDBへ反映する）
+- **処理手順**: 1) ソウルシャード加算額 2) rankExp加算→`expToRank(R) = 100 × R^1.8` でランクアップ判定（上限50、複数段一括） 3) 図鑑差分（遭遇敵・取得スキル/レリック/装備のうち未登録分） 4) 実績判定（累計統計を仮更新して条件評価、解除分と連動キャラ解放） 5) ストーリー進行
+- **例外**: なし（検証はUseCaseのstatus遷移が担う）
+- **Tx**: **UseCaseが1トランザクションで**: runs条件付きUPDATE（status IN cleared/failed/retired→finalized、0行なら中断）→通貨UPDATE+currency_transactions INSERT→progress UPDATE→codex/achievements INSERT（ON CONFLICT DO NOTHING）
+- **冪等性**: 冪等キー+status条件付きUPDATEの二重防御（第1部1.6参照）
+- **テスト観点**: (1)二重finalizeで報酬不変 (2)複数ランクアップ (3)図鑑の差分抽出 (4)実績連動キャラ解放 (5)grant内容とDB反映の一致
+- **疑似コード**:
+```typescript
+export function grantPersistentRewards(
+  run: RunState, player: PlayerPersistentData, masters: MasterBundle,
+): PersistentGrant {
+  const shards = run.earned.soulShards;                  // complete/fail/retireで係数適用済み
+  const progress = addRankExp(player.progress, run.earned.rankExp);   // 複数段ランクアップ対応
+  const codexDiff = diffCodex(player.codex, collectEncountered(run)); // 未登録のみ
+  const stats = accumulateStats(player.progress, run);   // 総ラン数/クリア数/撃破数...
+  const achievements = masters.achievements
+    .filter(a => !player.achievements.has(a.code) && evaluateCondition(a.condition, stats));
+  const unlockedCharacters = achievements
+    .flatMap(a => characterUnlocksBy(a, masters))
+    .filter(c => !player.characters.has(c));
+  return { soulShards: shards, progress, codexDiff,
+           achievements: achievements.map(a => a.code), unlockedCharacters,
+           transactions: [{ currency: 'soul_shards', amount: shards,
+                            reason: 'run_finalize', refId: run.id }] };
+}
+```
+
+## 2.31 saveRunProgress（save/ ※UseCase共通処理）
+
+- **目的**: 変更後RunStateの永続化（楽観ロック・スナップショット・冪等応答保存の共通実装）。domain純粋関数ではなく `src/server/usecases/shared/` に置く（例外として本書に含める）。
+- **引数**: `tx: PrismaTx`, `runId: string`, `expectedVersion: number`, `next: RunState`, `response: unknown`, `options: { snapshot?: boolean }`
+- **戻り値**: `{ version: number }`
+- **処理手順**: 1) `next.lastRequest` に冪等応答を格納 2) `UPDATE dungeon_runs SET run_state=$1, version=version+1 WHERE id=$2 AND version=$3` 3) 0行→`ERR_CONFLICT_VERSION` 4) options.snapshot（ノード開始時のみtrue）なら dungeon_run_snapshots へINSERTし、直近3世代を超える分をDELETE
+- **例外**: `ERR_CONFLICT_VERSION`
+- **Tx**: 呼び出し元Txに参加（必須） / **冪等性**: 楽観ロックが多重実行を構造的に排除
+- **テスト観点**: (1)version不一致で0行→409 (2)スナップショット3世代ローテーション (3)lastRequest保存
+
+## 2.32 validateRunState（save/）
+
+- **目的**: run_state（JSONB）の構造・不変条件を検証し、破損・改ざん・スキーマ不整合を検知する。
+- **引数**: `raw: unknown` / **戻り値**: `RunState`（検証済み・型付き）
+- **処理手順**: 1) `schemaVersion` 確認（未知の将来バージョン→`ERR_RUN_STATE_INVALID`、旧バージョン→マイグレーション関数適用） 2) Zodスキーマ検証 3) 不変条件: hp∈[0,maxHp] / sp∈[0,maxSp] / gold>=0 / positionのnodeIdがmapに存在 / skills<=8枠 / relics重複なし / battleはphase='battle'のときのみ存在 / rngCursor>=0
+- **例外**: `ERR_RUN_STATE_INVALID`（→スナップショット復旧フロー、15_Save_Data_Design.md）
+- **Tx**: 読み取り時に毎回実行 / **冪等性**: 決定的
+- **テスト観点**: (1)全不変条件の違反検知 (2)旧schemaVersionの移行 (3)正常データの素通し（性能: 1ms以内目標）
+
+---
+
+## 未決事項
+
+- 相打ち（プレイヤーと敵が同時にHP0）の扱いは「敗北優先」を仮決定（2.17）。プレイテストで理不尽感が強ければ「勝利優先」へ変更する（ISSUE-013候補）。
+- 麻痺の行動不能判定（30%）をプレイヤー行動送信の前後どちらで見せるか（現設計: 送信後にログで通知）はUX検証待ち。
+- generateSkillChoicesの「プール枯渇時のHP回復カード埋め」は暫定仕様。スキル種追加（20→40種）で自然解消する見込み。
+- saveRunProgressのスナップショット頻度（ノード開始時のみ）はストレージ実測後に見直す。
+
+## 実装時の注意点
+
+- 疑似コード中のヘルパ（effectiveAtk等）はバフ/デバフ/状態異常補正の**唯一の実装**として `src/domain/battle/modifiers.ts` に集約し、重複実装を禁止する。
+- Rngの消費順序が変わると再現性が壊れる。**抽選の呼び出し順を変更する修正はschemaVersionを上げる**こと。
+- domain層のテストは本書の「テスト観点」を最低ラインとし、21_Test_Design.md のTC群と対応付ける。
+- 第1部と第2部で処理手順が重複する箇所は、第1部（API視点）が正。矛盾を見つけたら本書を修正しDecision Logへ記録する。
+
+## 関連設計書
+
+- [13_API_Design.md](./13_API_Design.md) — 各関数を呼び出すAPIの仕様
+- [12_Database_Design.md](./12_Database_Design.md) — run_state・楽観ロック・冪等キーのDB定義
+- [15_Save_Data_Design.md](./15_Save_Data_Design.md) — run_stateスキーマとスナップショット復旧
+- [16_Battle_Design.md](./16_Battle_Design.md) / [17_Dungeon_Design.md](./17_Dungeon_Design.md) / [18_Skill_Design.md](./18_Skill_Design.md) / [19_Enemy_AI_Design.md](./19_Enemy_AI_Design.md) — 数値・マスタ仕様の出典
+- [21_Test_Design.md](./21_Test_Design.md) — テストケース対応
