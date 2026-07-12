@@ -13,7 +13,7 @@
 ## 関連文書
 
 - CORE_SPEC.md §5（ゲーム仕様）§7（API一覧）§8（テーブル一覧・run_state構造）
-- 08_API_Design.md / 11_Module_Design.md / 15_Save_Data_Design.md / 18_Skill_Design.md
+- 13_API_Design.md / 11_Module_Design.md / 15_Save_Data_Design.md / 18_Skill_Design.md
 
 ---
 

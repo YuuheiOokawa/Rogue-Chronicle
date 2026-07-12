@@ -15,7 +15,7 @@ API ID・テーブル名・計算式・run_state構造・エラーコードは C
 - 11_Module_Design.md（モジュール設計）
 - 12_Database_Design.md（DB設計）
 - 15_Save_Data_Design.md（セーブデータ設計）
-- 21_API_Design.md（API設計）
+- 13_API_Design.md（API設計）
 
 ## 前提となるレイヤ構成と責務
 
