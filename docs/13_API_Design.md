@@ -43,7 +43,7 @@
 ### 2.2 認証方式（DEC-006と一致）
 
 - Auth.js（NextAuth v5）のJWT戦略によるセッションCookieを用いる。
-- Cookie属性: **httpOnly + Secure + SameSite=Lax**。Cookie名は `__Host-rc.session-token`（仮決定 DEC-021。`__Host-`プレフィックスでPath=/・Secure・ドメイン固定を強制）。
+- Cookie属性: **httpOnly + Secure + SameSite=Lax**。Cookie名は `__Host-rc.session-token`（仮決定 DEC-131。`__Host-`プレフィックスでPath=/・Secure・ドメイン固定を強制）。
 - 有効期限: アクセストークン24時間、スライディング更新で最大30日（CORE_SPEC §12）。失効管理は `auth_sessions` テーブルで行う（強制ログアウト・退会時の無効化用）。
 - ゲストアカウント: API-005で `users.is_guest = true` のユーザーを発行し、同一のセッションCookieを付与する。ゲストも認証済みユーザーとして扱う（権限区分は§2.4）。
 - 認証必須APIでセッションが無い/期限切れの場合は `ERR_AUTH_UNAUTHORIZED` / `ERR_AUTH_SESSION_EXPIRED`（いずれも401）を返す。リダイレクトはAPI層では行わない（クライアント側でSCR-002/SCR-003へ誘導）。
@@ -65,7 +65,7 @@ CORSは同一オリジン運用のため許可ヘッダを付与しない（プ�
 |---|---|---|
 | ゲスト | `users.is_guest = true` の認証済みユーザー | ほぼ全ゲームAPIを利用可。API-006（引き継ぎ）はゲスト専用 |
 | 一般 | メール/パスワード登録済みユーザー | API-006は利用不可（`ERR_FORBIDDEN`） |
-| 管理者 | `users.role = 'admin'`（仮決定 DEC-022） | MVPでは管理画面なし（DEC-013）。管理APIは土台（roleチェック共通関数）のみ用意し、エンドポイントは公開しない |
+| 管理者 | `users.role = 'admin'`（仮決定 DEC-132） | MVPでは管理画面なし（DEC-013）。管理APIは土台（roleチェック共通関数）のみ用意し、エンドポイントは公開しない |
 
 ### 2.5 共通リクエストヘッダ
 
@@ -98,7 +98,7 @@ CORSは同一オリジン運用のため許可ヘッダを付与しない（プ�
 ```
 
 - `details` はエラーコードごとに構造を定める（各API仕様および§2.8参照）。`ERR_VALIDATION` の場合は `details.issues: [{ path, message }]`（Zodの`issues`を整形）。
-- 成功レスポンスはエンベロープなしでリソースを直接返す（仮決定 DEC-023）。`traceId`は成功時ヘッダ`X-Trace-Id`のみで返す。
+- 成功レスポンスはエンベロープなしでリソースを直接返す（仮決定 DEC-133）。`traceId`は成功時ヘッダ`X-Trace-Id`のみで返す。
 
 ### 2.8 HTTPステータス対応表
 
@@ -146,7 +146,7 @@ CORSは同一オリジン運用のため許可ヘッダを付与しない（プ�
 
 - 対象: ラン系変更API **API-303, 305, 306, 307, 402, 502, 503, 504, 505, 506, 507, 508**（CORE_SPEC §7補足と一致）。
 - クライアントは操作1回につきUUIDv4を生成して送る。タイムアウト・通信断での再送時は**同一キー・同一ボディ**で再送する。
-- サーバー実装（仮決定 DEC-024）: 専用テーブルは追加せず、`dungeon_runs.run_state` 内に直近の受理記録を保持する。
+- サーバー実装（仮決定 DEC-134）: 専用テーブルは追加せず、`dungeon_runs.run_state` 内に直近の受理記録を保持する。
   - 受理時に `run_state.lastRequest = { key, apiId, bodyHash, response }` を状態更新と同一UPDATE（同一トランザクション）で書き込む。
   - 同一キー再受信時: `bodyHash` 一致なら保存済み `response` をそのまま200で再返却（副作用なし）。`bodyHash` 不一致なら `ERR_DUPLICATE_REQUEST` (409)。
   - ラン操作はユーザー内で直列（1アクティブラン・1操作ずつ）のため直近1件の保持で十分。
@@ -161,12 +161,12 @@ CORSは同一オリジン運用のため許可ヘッダを付与しない（プ�
 | general | **60回/分/ユーザー** | userId | 認証必須の全API |
 
 - 超過時は `ERR_RATE_LIMITED` (429) + `Retry-After`。
-- 実装（仮決定 DEC-025）: MVPは固定ウィンドウカウンタをサーバーレス関数内のインメモリLRUで持つベストエフォート方式（インスタンス毎に独立するため実効値は緩む）。ログイン試行ロック（5回失敗で15分、CORE_SPEC §12）は `users` の失敗カウンタ/ロック時刻列でDB上厳密に管理し、これが認証系の実質的な防壁となる。将来Upstash Redis等で厳密化（→ISSUE-132）。
+- 実装（仮決定 DEC-135）: MVPは固定ウィンドウカウンタをサーバーレス関数内のインメモリLRUで持つベストエフォート方式（インスタンス毎に独立するため実効値は緩む）。ログイン試行ロック（5回失敗で15分、CORE_SPEC §12）は `users` の失敗カウンタ/ロック時刻列でDB上厳密に管理し、これが認証系の実質的な防壁となる。将来Upstash Redis等で厳密化（→ISSUE-132）。
 - 全レスポンスに `X-RateLimit-*` ヘッダを付与する（§2.6）。
 
 ### 2.12 ページネーション規約
 
-- カーソル方式（仮決定 DEC-026）。クエリ: `?limit=20&cursor=<opaque>`（limit最大50、既定20）。
+- カーソル方式（仮決定 DEC-136）。クエリ: `?limit=20&cursor=<opaque>`（limit最大50、既定20）。
 - レスポンス形: `{ "items": [...], "nextCursor": "..." | null }`。`nextCursor=null` が最終ページ。
 - MVPで対象となるのは API-104（お知らせ）のみ。API-106/201/301/601等は件数が小さい（実績10・キャラ3・ダンジョン1・図鑑数十件）ため全件返却とするが、レスポンス形は将来のページング追加に備え同じ `{ items }` 形を用いる。
 
@@ -208,7 +208,7 @@ CORSは同一オリジン運用のため許可ヘッダを付与しない（プ�
 
 ### 3.3 応答に含める状態（RunView投影）
 
-- サーバー保存形の `run_state` をそのまま返さず、**クライアント公開用の投影（RunView）** に変換して返す（仮決定 DEC-027）。除外するもの:
+- サーバー保存形の `run_state` をそのまま返さず、**クライアント公開用の投影（RunView）** に変換して返す（仮決定 DEC-137）。除外するもの:
   - 未踏破階層の隠し情報（SECRETノードの正体、EVENTの結果テーブル）
   - `rngCursor`・`lastRequest`（内部管理値）
   - 敵の内部AIステート（行動予告 `intent` のみ公開する）
@@ -417,7 +417,7 @@ const guestSchema = z.object({ displayName: z.string().min(1).max(20).optional()
 | 冪等性 | 自然冪等（削除済みなら401になる） |
 | 関連画面 | SCR-116 |
 | 関連テーブル | users および全player_*、dungeon_runs、auth_sessions（CASCADE削除）、audit_logs（削除記録） |
-| Tx境界 | 論理削除フラグ設定+全セッション失効を1トランザクション。物理削除は日次バッチ（仮決定 DEC-028: 7日間の猶予後に物理削除、期間中の復帰導線はMVPでは持たない） |
+| Tx境界 | 論理削除フラグ設定+全セッション失効を1トランザクション。物理削除は日次バッチ（仮決定 DEC-138: 7日間の猶予後に物理削除、期間中の復帰導線はMVPでは持たない） |
 
 リクエスト:
 ```jsonc
@@ -588,7 +588,7 @@ MVPではルート自体を配置しない（404）。将来 `{ items: [{ code, 
 | 関連テーブル | characters, player_characters, skills |
 | Tx境界 | 読み取りのみ |
 
-パスパラメータ: `characterId` = charactersマスタの `code`（例: `mage_lilia`。CORE_SPEC §3のマスタcode体系。仮決定 DEC-029: パス変数名はCORE_SPECどおり`characterId`とし、値はcodeを用いる）。
+パスパラメータ: `characterId` = charactersマスタの `code`（例: `mage_lilia`。CORE_SPEC §3のマスタcode体系。仮決定 DEC-139: パス変数名はCORE_SPECどおり`characterId`とし、値はcodeを用いる）。
 バリデーション: `z.string().regex(/^[a-z0-9_]{1,50}$/)`
 レスポンス（200）: API-201の1件分 + `growth`（成長率係数）+ `initialSkills`（初期スキル一覧）。
 処理概要: 1. セッション検証 → 2. code検索（無ければ `ERR_NOT_FOUND`）→ 3. 解放状態を付与し返却。
@@ -687,7 +687,7 @@ const upgradeSchema = z.object({
 | 関連テーブル | dungeons, dungeon_difficulties, dungeon_node_types, enemies |
 | Tx境界 | 読み取りのみ |
 
-パスパラメータ: `dungeonId` = dungeonsマスタの `code`（DEC-029と同方式）。
+パスパラメータ: `dungeonId` = dungeonsマスタの `code`（DEC-139と同方式）。
 レスポンス（200）: 名称・説明・階層数・出現ノードタイプ一覧（BATTLE/STRONG/ELITE/BOSS/TREASURE/SHOP/REST/EVENT/BLESS/HEAL/CURSE/STORY/SECRET）・出現敵の図鑑登録済みシルエット情報・難易度（Normalのみ）。
 処理概要: 1. セッション検証 → 2. code検索（無ければ `ERR_NOT_FOUND`）→ 3. 返却。
 エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_INTERNAL
@@ -744,7 +744,7 @@ const startRunSchema = z.object({
         "floors": [
           { "floor": 1, "nodes": [ { "nodeId": "f1n1", "type": "BATTLE" } ] },
           { "floor": 2, "nodes": [ { "nodeId": "f2n1", "type": "BATTLE" }, { "nodeId": "f2n2", "type": "TREASURE" }, { "nodeId": "f2n3", "type": "EVENT" } ] }
-          // …階層10まで。SECRETノードはEVENTとして表示（DEC-027の投影で正体を隠す）
+          // …階層10まで。SECRETノードはEVENTとして表示（DEC-137の投影で正体を隠す）
         ],
         "edges": [ { "from": "f1n1", "to": ["f2n1", "f2n2", "f2n3"] } ]
       },
@@ -776,7 +776,7 @@ const startRunSchema = z.object({
 8. **マップ生成**: `generateDungeonMap(seed, generationConfig)`（domain/dungeon）で階層1〜10のノードマップを生成。生成制御（CORE_SPEC §5.6）: 階層1=開始戦闘1個・階層10=BOSS1個・各階層2〜4ノード・階層5/9にREST必須・SHOP全体1〜2・ELITEは階層3以降・同一タイプ3連続禁止・SECRET10%・全パスがボス到達可能であることを`validateMapReachability`で検証。
 9. **run_state組み立て**: `startDungeonRun`（domain/dungeon）で初期run_state（§8のJSONB骨子）を構築。階層1は開始戦闘のため `startBattle`（domain/battle）で敵編成を生成し `battle` を格納、phase="battle"。rngCursorはマップ生成・敵編成で消費した回数。
 10. Tx内: dungeon_runs作成（status='active', seed, version=1, run_state, created_idempotency_key。部分ユニークインデックス `(user_id) WHERE status='active'` で二重作成を最終防衛）+ dungeon_run_snapshots初回世代を作成。
-11. RunView投影（DEC-027）に変換し201で返却。
+11. RunView投影（DEC-137）に変換し201で返却。
 
 エラー: ERR_VALIDATION / ERR_AUTH_UNAUTHORIZED / ERR_NOT_FOUND / ERR_RUN_ALREADY_ACTIVE / ERR_INVALID_ACTION / ERR_DUPLICATE_REQUEST / ERR_RATE_LIMITED / ERR_MAINTENANCE / ERR_INTERNAL
 
@@ -865,7 +865,7 @@ const selectNodeSchema = z.object({
    - SHOP: `generateShopItems`（domain/reward）で商品リストを生成しrun_state.shopに格納。phase="node_action"。
    - REST: 休憩選択肢を提示。phase="node_action"。
    - EVENT/BLESS/HEAL/CURSE/SECRET: random_eventsから抽選（SECRETは上位報酬テーブル）し、選択肢を提示。phase="node_action"。
-   - STORY: storiesの該当話を提示し、player_story_progressへは finalize時ではなく即時記録しない（ラン内はrun_stateのみ。仮決定 DEC-030: ストーリー既読の永続反映もAPI-307に集約）。
+   - STORY: storiesの該当話を提示し、player_story_progressへは finalize時ではなく即時記録しない（ラン内はrun_stateのみ。仮決定 DEC-140: ストーリー既読の永続反映もAPI-307に集約）。
 5. rngCursor更新を含む新run_stateで楽観ロックUPDATE（`WHERE version=:sent`。0行なら `ERR_CONFLICT_VERSION`）。階層が進んだ場合は同Txで `dungeon_run_snapshots` に世代追加し、直近3世代を超える分を削除（`saveRunProgress`）。
 6. `result` + RunView投影を返却。
 
@@ -951,7 +951,7 @@ const selectNodeSchema = z.object({
    - ランクEXP: `earned.rankExp` を加算し、`expToRank(R) = 100 × R^1.8` でランクアップ判定（上限50）。
    - 図鑑: ラン中に遭遇した敵・取得したスキル/レリック/装備をplayer_codex（entry_type別）へ新規登録分だけ抽出。
    - 実績: 累計統計（総ラン数・クリア数・撃破数等）更新後の解除判定（`evaluateAchievements`）。実績連動のキャラ解放（rogue_gald=累計ラン10回）もここで判定。
-   - ストーリー既読反映（DEC-030）。
+   - ストーリー既読反映（DEC-140）。
 4. **1トランザクションで一括付与**:
    1. `UPDATE dungeon_runs SET status='finalized', version=version+1, run_state=... WHERE id=? AND version=:sent AND status IN ('cleared','failed','retired')` — **0行なら即ロールバックし `ERR_CONFLICT_VERSION`（version不一致）または `ERR_REWARD_ALREADY_CLAIMED`（status不一致=先行finalize）を判別して返す。この条件付きUPDATEが二重付与防止の最終防衛線**。
    2. player_currencies加算 + currency_transactions記録（reason="run_finalize", run_id付き）。

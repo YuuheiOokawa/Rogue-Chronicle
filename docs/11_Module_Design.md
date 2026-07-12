@@ -639,7 +639,7 @@ function withRequestLogging<T>(apiId: string, handler: (log: Logger) => Promise<
 | 入力 | run_state、リクエストメタ（Idempotency-Key、IP、userId） |
 | 出力 | 検証結果、レート制限判定、冪等応答キャッシュ |
 | 依存先 | LoggingModule、domain/dungeon（validateRunState純粋関数） |
-| 使用テーブル | dungeon_runs（seed/rngCursor参照）、audit_logs（異常検知記録）、冪等キー・レート制限用テーブル（idempotency_keys / rate_limits。12_Database_Design.mdで定義、仮決定 DEC-028: サーバーレスのためインメモリ不可でDB実装） |
+| 使用テーブル | dungeon_runs（seed/rngCursor参照）、audit_logs（異常検知記録）、冪等キー・レート制限用テーブル（idempotency_keys / rate_limits。12_Database_Design.mdで定義、仮決定 DEC-098: サーバーレスのためインメモリ不可でDB実装） |
 | 関連API | ラン系変更API全て（303, 305, 306, 307, 402, 502〜508）の前段・保存前段 |
 | 発生エラー | ERR_RATE_LIMITED, ERR_DUPLICATE_REQUEST, ERR_RUN_STATE_INVALID, ERR_CONFLICT_VERSION |
 
@@ -694,7 +694,7 @@ domain層は純粋ロジック（Next.js/Prisma非依存）、server層はusecas
 
 | ID | 内容 | 期限目安 |
 |---|---|---|
-| ISSUE-111 | 冪等キー・レート制限テーブル（DEC-028）の物理設計（TTL・掃除方法: Vercel Cron vs 遅延削除）を12_Database_Design.mdで確定 | DB設計時 |
+| ISSUE-111 | 冪等キー・レート制限テーブル（DEC-098）の物理設計（TTL・掃除方法: Vercel Cron vs 遅延削除）を12_Database_Design.mdで確定 | DB設計時 |
 | ISSUE-112 | BattleEvent（演出用イベント列）の型仕様の確定（13_API_Design.mdのAPI-402応答と共同定義） | API設計時 |
 | ISSUE-113 | domain層に渡すMasterBundleの粒度（戦闘用一式を1回で取るか、遅延取得か）の性能検証 | 実装時 |
 | ISSUE-114 | detectAnomalyの閾値（1操作あたりのゴールド増分上限等）の初期値 | バランス調整時 |

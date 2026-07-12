@@ -75,8 +75,8 @@ flowchart TB
 | ゲームロジック | 戦闘計算・報酬抽選・乱数は全てサーバー側 `src/domain/` で実行（DEC-007）。クライアントは行動選択の送信と演出のみ |
 | DB接続 | Prisma → Neon Pooler（pooled接続文字列）経由。マイグレーションのみdirect接続を使用 |
 | デプロイ | GitHub push → GitHub Actions（CI）→ Vercel自動デプロイ。PRごとにPreview環境、mainブランチでProduction |
-| 監視 | MVP: Vercel Analytics（Web Vitals）+ `/api/v1/health`（DBのSELECT 1確認）を外形監視（UptimeRobot無料枠を利用、仮決定 DEC-021）。将来Sentry導入（DEC-020） |
-| ストレージ | 画像・効果音は `public/` に同梱しVercel CDN配信。外部オブジェクトストレージはMVPでは不要（アセット総量50MB以内を目安、仮決定 DEC-022） |
+| 監視 | MVP: Vercel Analytics（Web Vitals）+ `/api/v1/health`（DBのSELECT 1確認）を外形監視（UptimeRobot無料枠を利用、仮決定 DEC-091）。将来Sentry導入（DEC-020） |
+| ストレージ | 画像・効果音は `public/` に同梱しVercel CDN配信。外部オブジェクトストレージはMVPでは不要（アセット総量50MB以内を目安、仮決定 DEC-092） |
 
 ---
 
@@ -160,7 +160,7 @@ flowchart TB
 | 2 | パーティクル多用の演出（全体攻撃の火花・魔法陣等、同時100粒以上）が企画上必要になった時 | PixiJSを`features/battle/effects/`配下にCanvasオーバーレイとして部分導入。UI・ロジックはDOM/Reactのまま維持 |
 | 3 | 3D表現が企画に入った時 | Three.js（react-three-fiber）を該当画面のみ導入。MVP除外範囲のため当面なし |
 
-部分導入方式（DOMのUIレイヤー + Canvasの演出レイヤーを重ねる）とし、Phaserのような全面置換は行わない（仮決定 DEC-023）。domain層はレンダリング技術に非依存のため、切替の影響はfeatures層に限定される。
+部分導入方式（DOMのUIレイヤー + Canvasの演出レイヤーを重ねる）とし、Phaserのような全面置換は行わない（仮決定 DEC-093）。domain層はレンダリング技術に非依存のため、切替の影響はfeatures層に限定される。
 
 ---
 
@@ -180,7 +180,7 @@ flowchart TB
 
 戦闘状態・ダンジョン進行状態の原則（DEC-007/DEC-011）:
 - 真実源は常に `dungeon_runs.run_state`（サーバー）。クライアントはAPI-304/401の応答をTanStack Queryでキャッシュするだけで、独自に状態遷移を計算しない
-- API-402（行動実行）等の変更系はmutation成功応答でキャッシュを`setQueryData`更新（楽観更新は行わない。仮決定 DEC-024。理由: 乱数を含む戦闘結果はクライアントで予測不能）
+- API-402（行動実行）等の変更系はmutation成功応答でキャッシュを`setQueryData`更新（楽観更新は行わない。仮決定 DEC-094。理由: 乱数を含む戦闘結果はクライアントで予測不能）
 - Zustandの戦闘系ストアは「サーバー応答を演出として順次再生するためのキュー」のみを持ち、リロードで消えても整合性に影響しない
 
 ### 4.2 状態管理技術の比較表（DEC-008の根拠）
@@ -272,7 +272,7 @@ scripts/                      # 運用スクリプト（シード投入、マス
 | server/repositories/ | @prisma/client, domain/（インターフェース・型） | next/*（Request/Response不可）, features/*, components/* |
 | server/usecases/ | domain/, server/repositories/, server/services/, schemas/ | react, features/*, components/* |
 | app/api/ | server/usecases/, schemas/, server/services/ | domain/を直接呼ばない（必ずusecase経由。トランザクション・冪等性の漏れ防止） |
-| features/, components/ | lib/, hooks/, stores/, schemas/, types/, constants/ | server/*, @prisma/client, domain/（表示用計算が必要な場合のみdomain/sharedの純粋関数を例外許可。仮決定 DEC-025） |
+| features/, components/ | lib/, hooks/, stores/, schemas/, types/, constants/ | server/*, @prisma/client, domain/（表示用計算が必要な場合のみdomain/sharedの純粋関数を例外許可。仮決定 DEC-095） |
 
 強制手段: ESLintの `import/no-restricted-paths`（eslint-plugin-import）+ `server-only` パッケージで機械的に検査し、CIのlintで違反を落とす。
 
@@ -303,11 +303,11 @@ flowchart LR
 | 制約 | 内容 | 対処 |
 |---|---|---|
 | 関数実行時間 | Hobby枠は既定10秒（`maxDuration`設定上限60秒） | 全APIをタイムアウト10秒以内に設計（非機能要件）。重い処理は存在しない設計（1戦闘ターンの計算は数ms、マップ生成も10階層×最大4ノードで軽量）。バッチ的処理（図鑑一括更新等）はリザルト確定（API-307）1トランザクション内で完結する量に制限 |
-| コールドスタート | アイドル後の初回リクエストで数百ms〜1秒超の遅延 | (1) Prisma Clientをモジュールスコープでシングルトン生成し再利用 (2) バンドル削減（Route Handlerごとに必要なusecaseのみimport）(3) ヘルスチェック外形監視（5分間隔）が実質的なウォームアップを兼ねる (4) p95 500ms目標はウォーム時基準とし、コールド時は操作応答1秒以内を許容ラインとする（仮決定 DEC-026） |
+| コールドスタート | アイドル後の初回リクエストで数百ms〜1秒超の遅延 | (1) Prisma Clientをモジュールスコープでシングルトン生成し再利用 (2) バンドル削減（Route Handlerごとに必要なusecaseのみimport）(3) ヘルスチェック外形監視（5分間隔）が実質的なウォームアップを兼ねる (4) p95 500ms目標はウォーム時基準とし、コールド時は操作応答1秒以内を許容ラインとする（仮決定 DEC-096） |
 | DBコネクション枯渇 | サーバーレスは同時実行ごとに接続を張るためPostgreSQLの接続上限を突破しうる | **Neon Pooler（pooled接続文字列）を必ず使用**。Prismaの`DATABASE_URL`はpooled、`DIRECT_URL`（マイグレーション用）はdirect接続に分離。`connection_limit=1`を接続文字列に付与し関数あたり接続を最小化 |
 | ステートレス | インスタンス間でメモリ共有不可 | セッションはJWT Cookie（DEC-006）、レート制限・冪等キーはDBテーブルで管理（インメモリ不可）。マスタデータキャッシュはインスタンスローカル+master_data_versionsで失効判定 |
 | Neonのスケールtoゼロ | DBアイドル後の初回クエリに数百msの起動遅延 | 外形監視のヘルスチェック（DB疎通含む）が実質的にサスペンドを抑制。プレイ中は常時クエリがあるため影響は初回アクセスのみ |
-| リージョン遅延 | 関数とDBのリージョン不一致でRTT増大 | Vercel関数リージョンを東京（hnd1）、Neonをap-southeast-1（シンガポール、東京提供時は東京へ移行）に固定し、関数↔DB間RTTを最小化（仮決定 DEC-027） |
+| リージョン遅延 | 関数とDBのリージョン不一致でRTT増大 | Vercel関数リージョンを東京（hnd1）、Neonをap-southeast-1（シンガポール、東京提供時は東京へ移行）に固定し、関数↔DB間RTTを最小化（仮決定 DEC-097） |
 | WebSocket不可 | サーバーレス関数で常時接続不可 | 本作はターン制でリアルタイム通信不要（リアルタイムマルチはMVP除外）。全てリクエスト/レスポンスで完結 |
 
 ---
@@ -316,17 +316,17 @@ flowchart LR
 
 | ID | 内容 | 期限目安 |
 |---|---|---|
-| ISSUE-101 | Neonの東京リージョン提供状況の確認とリージョン最終決定（DEC-027の再確認） | 実装開始時 |
-| ISSUE-102 | 外形監視サービスの最終選定（UptimeRobot無料枠 vs Vercel Cron自己監視、DEC-021） | MVPリリース前 |
-| ISSUE-103 | 効果音アセットの配信方式（public同梱で50MB以内に収まるかの実測、DEC-022） | アセット制作時 |
+| ISSUE-101 | Neonの東京リージョン提供状況の確認とリージョン最終決定（DEC-097の再確認） | 実装開始時 |
+| ISSUE-102 | 外形監視サービスの最終選定（UptimeRobot無料枠 vs Vercel Cron自己監視、DEC-091） | MVPリリース前 |
+| ISSUE-103 | 効果音アセットの配信方式（public同梱で50MB以内に収まるかの実測、DEC-092） | アセット制作時 |
 | ISSUE-104 | Vercel Hobby→Pro移行の判断基準額（月間コスト上限）の設定 | MVPリリース後1ヶ月 |
-| ISSUE-105 | features/からdomain/shared参照の例外許可（DEC-025）の範囲確定（表示用ダメージプレビュー等が本当に必要か） | UI実装時 |
+| ISSUE-105 | features/からdomain/shared参照の例外許可（DEC-095）の範囲確定（表示用ダメージプレビュー等が本当に必要か） | UI実装時 |
 
 ## 実装時の注意点
 
 1. Prismaの接続文字列は必ずpooled（Neon Pooler経由）を使用し、マイグレーションのみDIRECT_URLを使うこと。取り違えると本番で接続枯渇する
 2. domain層に`import { PrismaClient }`や`next/server`が混入しないよう、ESLintルールを実装初日に設定する（後付けは違反の山になる）
-3. 戦闘・ラン系mutationは楽観更新をしない（DEC-024）。TanStack Queryの`onSuccess`でサーバー応答をそのままキャッシュに反映する
+3. 戦闘・ラン系mutationは楽観更新をしない（DEC-094）。TanStack Queryの`onSuccess`でサーバー応答をそのままキャッシュに反映する
 4. LocalStorageへの書き込みは`stores/settingsStore.ts`のpersistミドルウェア経由に一元化し、4.3の禁止データが紛れ込む経路を作らない
 5. Framer Motionは`LazyMotion + domAnimation`でバンドルを削減し、戦闘画面のアニメはtransform/opacityのみ使用（width/height/topアニメはレイアウト再計算で60fpsを壊す）
 6. `/api/v1/health`はDB `SELECT 1`まで確認する実装とし、Vercel LogsでtraceId付き構造化ログ（JSON 1行）を出力する（DEC-020）

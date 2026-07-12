@@ -41,7 +41,7 @@ TypeScript は **strict モード必須**（CORE_SPEC §10）。`tsconfig.json` 
 - `any` は原則禁止。外部データ境界（APIレスポンス・JSONB）は `unknown` で受けて Zod でパースする
 - `as` キャストは Zod パース済みデータ・テストコード・型の絞り込みが自明な箇所のみ許可。使う場合はコメントで理由を残す
 - `!`（non-null assertion）は禁止。`??` / 早期 return / Zod で担保する
-- `enum` は使わず `as const` オブジェクト + ユニオン型を使う（Tree-shaking と Prisma enum との混同回避のため。仮決定 DEC-101）
+- `enum` は使わず `as const` オブジェクト + ユニオン型を使う（Tree-shaking と Prisma enum との混同回避のため。仮決定 DEC-240）
 
 ```ts
 export const NODE_TYPE = {
@@ -66,7 +66,7 @@ export type NodeType = (typeof NODE_TYPE)[keyof typeof NODE_TYPE];
 
 - ESLint: `next/core-web-vitals` + `next/typescript` をベースに、`eslint-plugin-import`（import順序・依存方向制約）を追加
 - Prettier: フォーマットは全て Prettier に委譲し、ESLint はロジック検査のみ（`eslint-config-prettier` で競合ルール無効化）
-- Prettier 設定（仮決定 DEC-102）:
+- Prettier 設定（仮決定 DEC-241）:
 
 ```jsonc
 // .prettierrc
@@ -580,7 +580,7 @@ pnpm dev                # http://localhost:3000
 - ESLint の依存方向制約（§2.2）は Phase 1 の初期構築時点で導入すること。後付けだと違反が蓄積して直せなくなる
 - `src/config/env.ts` の Zod パースは `next build` 時にも走るため、ビルド環境（Vercel/CI）に全必須変数が揃っている必要がある。CI では dummy 値を `.env.test` で供給する
 - Prisma の `@@map`/`@map` を最初のモデルから徹底すること。途中から snake_case マッピングに変えるとマイグレーションが破壊的になる
-- `enum` 不採用（DEC-101）のため、Prisma スキーマ側も DB enum ではなく `String` + アプリ側 Zod 検証で統一する（Neon でのマイグレーション互換性が高い）
+- `enum` 不採用（DEC-240）のため、Prisma スキーマ側も DB enum ではなく `String` + アプリ側 Zod 検証で統一する（Neon でのマイグレーション互換性が高い）
 - PRNG（DEC-019）と時刻の注入規則（§2.2）はコードレビューで最重点確認する。1箇所でも `Math.random()` が混ざるとランの再現性検証（不正対策）が壊れる
 
 ## 関連設計書

@@ -142,6 +142,116 @@
 | DEC-023(予定) | Sentry導入 | 正式公開後1ヶ月 |
 | DEC-024(予定) | パスワード再設定のメール基盤（Resend） | Phase 13 |
 
+## 追補: 各設計書ローカルの仮決定一覧（登録簿）
+
+採番ルール: グローバル決定 = DEC-001〜020（+今後は029まで予約）。文書ローカルの仮決定は本登録簿に必ず記載し、番号の重複を禁止する。新規採番は本表の空き番号を使用する。
+
+| DEC番号 | 決定内容の一行要約 | 出典文書 |
+|---|---|---|
+| DEC-030 | SPは戦闘終了時にリセットせず、次の戦闘開始時にmaxSpまで回復する（SP回復内訳の定義） | 16_Battle_Design.md |
+| DEC-031 | 攻撃は命中・回避に関わらずSP+1を付与。heal/buff/自己対象スキルは必中 | 16_Battle_Design.md |
+| DEC-032 | MVP消耗品アイテムは3種、所持上限は各コード5個（超過獲得は破棄しゴールド+10G換算） | 16_Battle_Design.md |
+| DEC-033 | 戦闘バランス初期案の早見表数値（敵基礎ステータス等） | 16_Battle_Design.md |
+| DEC-034 | stunは次の行動を1回スキップ。stun中の対象への再付与は無効（連続スタンハメ防止） | 16_Battle_Design.md |
+| DEC-035 | 状態異常の効果値・持続ターンのMVP初期値（スキル・レリック側で上書き可） | 16_Battle_Design.md |
+| DEC-036 | 敵は保存済みintentを再抽選せず実行。対象・条件が無効化された場合は通常攻撃へフォールバック | 16_Battle_Design.md |
+| DEC-037 | ボス（ruin_guardian）の3フェーズ仕様の具体数値（CORE_SPEC §5.7の具体化） | 16_Battle_Design.md |
+| DEC-038 | ゴールド報酬式 = floor(Σ baseGold × (1 + 0.10 × (floor - 1)) × rand(0.9〜1.1)) | 16_Battle_Design.md |
+| DEC-039 | スキルレベル反映式: 実効skillMult = skillMult × (1 + 0.15 × (level - 1))。SPコスト不変 | 16_Battle_Design.md |
+| DEC-040 | ノードタイプはdungeon_node_typesマスタ登録・アイコンはlucide-react基本。BLESSは3択、HEALはHP35%回復+25%でポーション | 17_Dungeon_Design.md |
+| DEC-041 | SECRET隠し部屋: rare以上確定の装備1個+60G。マップ全体10%でEVENT系ノードから置換 | 17_Dungeon_Design.md |
+| DEC-042 | ノード配置の固定枠・保証枠を除く重み表と、割当違反時のフォールバック規則 | 17_Dungeon_Design.md |
+| DEC-043 | イベントは等重み抽選（直前に見たものは除外）。数値はサーバー処理、イベントによる死亡なし（HP下限1） | 17_Dungeon_Design.md |
+| DEC-044 | TREASUREノードはreward_tablesのrt_treasure_normalを参照して1回抽選 | 17_Dungeon_Design.md |
+| DEC-045 | ショップ価格式 = floor(基準価格 × (1 + 0.1 × 階層)) と基準価格の初期値 | 17_Dungeon_Design.md |
+| DEC-046 | クリア時はソウルシャード獲得率100%+クリアボーナス（ソウルシャード+50） | 17_Dungeon_Design.md |
+| DEC-050 | 敵共通パラメータの定義。intent表示はアイコンのみで予測ダメージ帯は表示しない | 19_Enemy_AI_Design.md |
+| DEC-051 | 敵別の行動一覧・AIルール表の数値 | 19_Enemy_AI_Design.md |
+| DEC-052 | 敵ドロップはreward_tables参照方式（通常10%・強敵30%・エリート50%・ボス100%） | 19_Enemy_AI_Design.md |
+| DEC-053 | shamanの召喚仕様: 場は最大3体、召喚スライムはEXP・ゴールド・ドロップ0、行動は次ターンから | 19_Enemy_AI_Design.md |
+| DEC-054 | skeleton_guardのカウンター仕様: 被ダメ50%減+直接ダメージ被弾ごとにskill_mult 0.5で反撃（1ターン最大2回） | 19_Enemy_AI_Design.md |
+| DEC-055 | 敵図鑑はplayer_codex連携（召喚スライムの撃破も登録・kills集計対象） | 19_Enemy_AI_Design.md |
+| DEC-056 | 将来Hard: difficultyMod 1.3 + enemy_ai_rulesにdifficulty列を追加するデータ駆動のAIルール追加方式 | 19_Enemy_AI_Design.md |
+| DEC-057 | 敵編成（スポーン）ルール: ノード種別ごとの敵数分布とプール抽選（同種最大2体） | 19_Enemy_AI_Design.md |
+| DEC-081 | 横画面検出時は半透明オーバーレイで縦画面推奨を表示（強制ブロックはしない） | 08_UI_UX_Design.md |
+| DEC-082 | ホーム系・準備系・認証系・共通画面は中央寄せmax-width 768px | 08_UI_UX_Design.md |
+| DEC-083 | 初回出撃は短縮5階層の専用チュートリアルランを強制（スキップ不可） | 08_UI_UX_Design.md |
+| DEC-084 | 「魔法図書館」要素は図鑑・実績・リザルトの「記録される」演出モチーフとしてサブテーマ化 | 08_UI_UX_Design.md |
+| DEC-085 | ライトテーマは提供しない（ダークファンタジー固定） | 08_UI_UX_Design.md |
+| DEC-086 | 見出し・演出文字のフォントはShippori Mincho | 08_UI_UX_Design.md |
+| DEC-087 | ゲーム内シンボルは絵文字を第一実装とし、GameIconコンポーネントに集約（将来SVG差し替え可能） | 08_UI_UX_Design.md |
+| DEC-088 | 画像アセットは「キャラ立ち絵・敵スプライト・ボス背景1枚」の最小限に限定 | 08_UI_UX_Design.md |
+| DEC-089 | アクセシビリティは「ナビゲーションと状態把握が可能」レベルを保証（完全対応はMVPスコープ外） | 08_UI_UX_Design.md |
+| DEC-091 | 監視はVercel Analytics + /api/v1/healthの外形監視（UptimeRobot無料枠） | 10_System_Architecture.md |
+| DEC-092 | 画像・効果音はpublic/同梱でVercel CDN配信（アセット総量50MB以内目安、外部ストレージ不要） | 10_System_Architecture.md |
+| DEC-093 | Canvas演出は部分導入方式（DOMのUIレイヤー+Canvasの演出レイヤー重ね）、全面置換はしない | 10_System_Architecture.md |
+| DEC-094 | 戦闘・ラン系mutationは楽観更新をしない（成功応答でsetQueryData更新） | 10_System_Architecture.md |
+| DEC-095 | features/からdomain/shared純粋関数への参照を例外許可（表示用計算が必要な場合のみ） | 10_System_Architecture.md |
+| DEC-096 | コールドスタート対策一式。p95 500msはウォーム時基準、コールド時は操作応答1秒以内を許容 | 10_System_Architecture.md |
+| DEC-097 | Vercel関数リージョン東京（hnd1）、Neonはap-southeast-1（東京提供時は移行）に固定 | 10_System_Architecture.md |
+| DEC-098 | 冪等キー・レート制限テーブルはDB実装（サーバーレスのためインメモリ不可） | 11_Module_Design.md |
+| DEC-101 | マスタ系PKは連番int（IDENTITY）+ UNIQUEなcode(text)の併用 | 12_Database_Design.md |
+| DEC-102 | idempotency_keysテーブルを追加、応答キャッシュは24時間保持 | 12_Database_Design.md |
+| DEC-103 | battle_logsの保持期間は30日（日次削除バッチ） | 12_Database_Design.md |
+| DEC-106 | 消費アイテムはマスタテーブル化せずTypeScript定数 + run_state.itemsで管理 | 12_Database_Design.md |
+| DEC-107 | audit_logsの保持期間は1年 | 12_Database_Design.md |
+| DEC-108 | 容量見積の前提値（1年後: 登録5,000/アクティブ1,000/DAU 100/1日300ラン） | 12_Database_Design.md |
+| DEC-109 | 休眠ゲストは最終ログインから180日で削除（部分INDEXで対応） | 12_Database_Design.md |
+| DEC-110 | 表示名の重複は許容（一意化しない） | 12_Database_Design.md |
+| DEC-111 | マスタ横断のcode参照はFKを張らずアプリで検証（player_codex.code等） | 12_Database_Design.md |
+| DEC-112 | goldはサーバー権威の主要増減のみcurrency記録（残高権威はrun_state）。soul_shardsは全増減記録 | 12_Database_Design.md |
+| DEC-113 | difficulty列はdungeon_difficulties.codeと対応（FKなし・アプリ検証） | 12_Database_Design.md |
+| DEC-114 | maintenance_settingsはアプリ側で60秒キャッシュ | 12_Database_Design.md |
+| DEC-131 | セッションCookieは`__Host-rc.session-token`（httpOnly + Secure + SameSite=Lax） | 13_API_Design.md |
+| DEC-132 | 管理者判定はusers.role = 'admin'（管理APIは土台のみ、エンドポイント非公開） | 13_API_Design.md |
+| DEC-133 | 成功レスポンスはエンベロープなしでリソース直接返却（traceIdはX-Trace-Idヘッダ） | 13_API_Design.md |
+| DEC-134 | 冪等性の受理記録は専用テーブルを追加せずdungeon_runs.run_state内に保持 | 13_API_Design.md |
+| DEC-135 | レート制限はMVPでは関数内インメモリLRUのベストエフォート。ログイン試行ロックのみDB厳密管理 | 13_API_Design.md |
+| DEC-136 | 一覧APIはカーソル方式ページネーション（limit最大50、既定20） | 13_API_Design.md |
+| DEC-137 | run_stateはクライアント公開用の投影（RunView）に変換して返す | 13_API_Design.md |
+| DEC-138 | 退会は論理削除+全セッション失効を1Tx、7日間の猶予後に物理削除（期間中の復帰導線なし） | 13_API_Design.md |
+| DEC-139 | パス変数characterId等はCORE_SPECどおりの変数名で、値はマスタcodeを用いる | 13_API_Design.md |
+| DEC-140 | ストーリー既読の永続反映はAPI-307（finalize）に集約（ラン内はrun_stateのみ） | 13_API_Design.md |
+| DEC-141 | 認証はAuth.jsのProvider配列追加だけでOAuth拡張可能な構成（将来拡張を見込んだ設計方針） | 14_Authentication_Design.md |
+| DEC-142 | ゲストの引き継ぎ推奨モーダルはプレイヤーランク3到達および累計ラン3回時点で表示 | 14_Authentication_Design.md |
+| DEC-143 | email重複時はERR_VALIDATION(400)+汎用文言（存在有無を悟らせない） | 14_Authentication_Design.md |
+| DEC-144 | セッション照合結果は同一リクエスト内でメモ化（外部キャッシュはMVPでは使わない） | 14_Authentication_Design.md |
+| DEC-145 | 退会の復帰猶予は30日間（MVPでは復帰機能なし、猶予のみ確保） | 14_Authentication_Design.md |
+| DEC-151 | セーブUIは持たない。「進行は自動的にサーバーへ保存されています」の表示のみ | 15_Save_Data_Design.md |
+| DEC-152 | 終了済みランはラン終了から7日後にバッチ削除 | 15_Save_Data_Design.md |
+| DEC-153 | 全世代検証NG時はラン放棄補償: ソウルシャード100% + 固定補償50 | 15_Save_Data_Design.md |
+| DEC-154 | run_state復旧はAPI-304呼び出し時点で復元済み状態を返す同期的な整理とする | 15_Save_Data_Design.md |
+| DEC-181 | 必殺技はMVPでは「SPコスト8以上・倍率2.5以上のepicアクティブスキル」として表現（専用ゲージは将来） | 18_Skill_Design.md |
+| DEC-182 | 固有スキル（is_innate=true）は開始時から自動所持・所持8枠の枠外 | 18_Skill_Design.md |
+| DEC-183 | スキル進化は将来列（evolves_to_skill_id / evolve_condition）の枠組みのみ定義、MVP未実装 | 18_Skill_Design.md |
+| DEC-184 | 得意武器一致の武器はbase_stats全数値+10%（端数切り捨て、最低+1） | 18_Skill_Design.md |
+| DEC-185 | スキル報酬スキップ時の代替報酬はHP10%回復（maxHp比） | 18_Skill_Design.md |
+| DEC-186 | 装備強化はMVP除外・将来対応（equipment.upgrade_config jsonb列を予約） | 18_Skill_Design.md |
+| DEC-187 | synergy_tags一致でスキル抽選重みを補正（係数1.5、確定にはしない） | 18_Skill_Design.md |
+| DEC-221 | CSPのscript-src 'unsafe-inline'はNext.js対応の暫定、将来nonce方式へ移行 | 22_Security_Design.md |
+| DEC-222 | npm auditをCIに組み込み、High以上の脆弱性でCI失敗 | 22_Security_Design.md |
+| DEC-240 | TypeScriptのenumは使わず`as const`オブジェクト + ユニオン型を使う | 24_Development_Guideline.md |
+| DEC-241 | Prettier設定の内容（フォーマットは全てPrettierに委譲） | 24_Development_Guideline.md |
+| DEC-250 | リポジトリ名はrogue-chronicle | 25_GitHub_Operation.md |
+| DEC-251 | リポジトリ可視性はPrivate推奨 | 25_GitHub_Operation.md |
+| DEC-252 | mainのbranch protection: PR必須・CIステータス必須・直push禁止（approval必須は設定しない） | 25_GitHub_Operation.md |
+| DEC-253 | 公開時のライセンスはMITを第一候補（マスタデータ分離判断とセットで決定） | 25_GitHub_Operation.md |
+| DEC-254 | ブランチ戦略はmain + developの簡易型（GitHub Flow寄り） | 25_GitHub_Operation.md |
+| DEC-255 | マージは必ずPR経由・squash merge（1機能=1コミットの履歴維持） | 25_GitHub_Operation.md |
+| DEC-256 | リリースPRもsquashで統一し、リリース内容はタグ + CHANGELOGで追跡 | 25_GitHub_Operation.md |
+| DEC-257 | DBマイグレーションはVercelビルド時に`prisma migrate deploy`を実行 | 25_GitHub_Operation.md |
+| DEC-260 | local / Preview / Productionの3環境構成 | 26_Release_Plan.md |
+| DEC-261 | NeonリージョンはAWS ap-northeast-1（Tokyo）を選択 | 26_Release_Plan.md |
+| DEC-262 | 独自ドメインは正式公開判定通過後に取得（それまでvercel.appドメインでコスト0円運用） | 26_Release_Plan.md |
+| DEC-263 | DBはロールバックせず前方修正のみ。マイグレーション後方互換ルール（3段階）を全適用 | 26_Release_Plan.md |
+| DEC-264 | メンテによる強制ラン終了は差分20%上乗せで実質100%補償（クリアボーナスなし） | 26_Release_Plan.md |
+| DEC-265 | 無料枠有料化を検討する閾値（Neon compute月150時間超等）の定義 | 26_Release_Plan.md |
+| DEC-270 | MVP完成（Phase 12終了）まで6〜9ヶ月を計画値とし、9ヶ月超過見込みでMVP範囲再削減を発動 | 27_Roadmap.md |
+| DEC-271 | 戦闘バランス目標帯（初見クリア率5〜15%、10ラン後30〜50%）は仮置き、βの実測で見直す | 27_Roadmap.md |
+
+- 注: DEC-104〜105は12_Database_Design.md内で欠番（未使用）。欠番は再利用しない（記載ルール準拠）。
+- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 272以降は空き番号。
+
 ## 未決事項
 - 本ログはDEC-001〜020を初期採録した。以後の決定は追記制とし、`28_Open_Issues.md` の課題が決着するたびに本ログへ転記する。
 
