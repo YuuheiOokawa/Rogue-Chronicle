@@ -1194,6 +1194,214 @@ CREATE UNIQUE INDEX uq_dungeon_runs_active_per_user
 
 処理手順: (1) INSERTを試行 → 成功なら本処理実行後にresponseをUPDATE / (2) PK衝突ならSELECTし、完了済み→保存済みresponseを返却、処理中→ERR_DUPLICATE_REQUEST(409)。
 
-<!-- __CONT__ -->
+# 5. 設計方針
+
+## 5.1 UUIDと連番IDの使い分け（DEC-101関連）
+
+| 対象 | PK方式 | 理由 |
+|---|---|---|
+| ユーザー系・ラン系（users, dungeon_runs, currency_transactions, audit_logs 等） | UUID v7（`gen_random_uuid()`はv4のためアプリ側でv7生成、仮決定） | 推測不能（IDOR対策）、複数端末・分散生成で衝突しない。v7は時間順ソート可能でインデックス断片化を抑制 |
+| マスタ系（characters, skills, enemies 等） | 連番int + UNIQUEなcode(text) | シード管理・FK・デバッグが容易。外部公開はcodeで行いintは内部専用 |
+
+- APIの入出力では**マスタはcode、ユーザーデータはUUID**のみを使用し、連番intを外部に出さない。
+
+## 5.2 JSONBを使う箇所・使わない箇所
+
+| 使う（スキーマ進化・一括読み書きが主目的） | 使わない（集計・整合性が必要） |
+|---|---|
+| dungeon_runs.run_state（DEC-011。1ランを常に一括読み書き） | player_currencies（残高。加減算の整合性・CHECK制約が必要） |
+| skill_effects.params / level_scaling（効果パラメータの多様性） | player_codex（発見率集計・UNIQUE制約） |
+| enemy_ai_rules.condition（条件式の多様性） | player_achievements / player_characters（解放判定・JOIN） |
+| dungeons.generation_config（生成パラメータ） | currency_transactions（監査・集計の根幹） |
+| battle_logs.turns（参照は調査時のみ） | player_upgrades（段数の検証・前提ノードJOIN） |
+
+- JSONBカラムは**必ずZodスキーマで読み書き時に検証**し（validateRunState等）、`schemaVersion` フィールドで構造移行に備える。
+- JSONB内の値を条件にした検索は原則行わない（必要になったら生成列+インデックスを追加）。
+
+## 5.3 履歴管理
+
+- 通貨: 残高は player_currencies、増減履歴は currency_transactions（append-only、reason/ref_id/idempotency_key付き）。**残高と履歴の同時更新を1トランザクションで強制**し、履歴合計と残高の突合バッチで改ざん・バグを検知できる。
+- ラン: dungeon_run_snapshots にノード開始時点の run_state を世代保存（直近3世代、超過分は同Tx内でDELETE）。
+- マスタ: master_data_versions にリリース単位で記録。シードはGit管理が原本。
+
+## 5.4 排他制御・楽観ロック
+
+- dungeon_runs.version / player_currencies.version による楽観ロック。更新は必ず
+  `UPDATE ... SET version = version + 1 WHERE id = $1 AND version = $2` の形式とし、0行更新は `ERR_CONFLICT_VERSION` として返す。
+- 悲観ロック（SELECT FOR UPDATE）は使用しない（サーバーレスの接続保持時間を最小化するため。仮決定）。
+- 「同時アクティブラン1つ」は部分UNIQUEインデックス
+  `CREATE UNIQUE INDEX uq_dungeon_runs_active ON dungeon_runs (user_id) WHERE status = 'active';`
+  でDBレベル保証（アプリ検証はUX用の事前チェックに過ぎない）。
+
+## 5.5 トランザクション境界
+
+| ユースケース | 1トランザクションに含める操作 |
+|---|---|
+| ラン開始（API-303） | アクティブラン検査→runs INSERT→snapshots INSERT |
+| ラン系変更（API-305/402/502〜508） | runs条件付きUPDATE（楽観ロック）→（終了時battle_logs INSERT）→（ノード開始時snapshots INSERT+ローテーション） |
+| finalize（API-307） | runs条件付きUPDATE（status遷移）→player_currencies UPDATE→currency_transactions INSERT→player_progress UPDATE→player_codex/player_achievements/player_characters INSERT（ON CONFLICT DO NOTHING） |
+| 永続強化（API-204） | player_currencies条件付きUPDATE→player_upgrades upsert→currency_transactions INSERT |
+
+- Prismaの `$transaction`（interactive transaction）を使用し、タイムアウトは5秒（API全体10秒の内側）。
+
+## 5.6 N+1問題への指針
+
+- 一覧系API（API-201, 301, 601）はマスタ全件+ユーザーデータ1クエリの2クエリ構成を上限とし、ループ内クエリを禁止。
+- Prismaでは `include`/`in` 句によるバッチ取得を使用。マスタは起動時ロード+メモリキャッシュ（master_data_versionsで失効判定、サーバーレスのためインスタンス生存中のみ）。
+
+## 5.7 大量データ化・ログ肥大化対策
+
+| テーブル | 増加ペース試算（DAU100） | 対策 |
+|---|---|---|
+| dungeon_runs | 〜500行/日 | finalized後90日で物理削除（統計はplayer_progressに集約済み、仮決定） |
+| dungeon_run_snapshots | ラン中のみ3世代 | ラン終了時に全削除（finalize Tx内） |
+| battle_logs | 〜7,500行/日 | **30日で削除**（Vercel Cron日次バッチ）。パーティションは行数見込みから不要と判断 |
+| currency_transactions | 〜1,000行/日 | 無期限保持（監査根幹）。年1回アーカイブ検討 |
+| audit_logs | 〜500行/日 | 1年で削除 |
+| idempotency_keys | 〜10,000行/日 | expires_at（24h）超過を毎時削除 |
+
+## 5.8 マスタ変更が既存ランへ与える影響（ISSUE-004）
+
+- run_state にはマスタの**参照code**のみを保存し値を複製しないため、ラン途中でマスタ値が変わると挙動が変わる。
+- MVP運用（仮決定）: バランス変更を含むリリースはメンテナンスウィンドウで実施し、アクティブランを強制リタイア（retired扱い・ソウルシャード100%補償）してから適用する。maintenance_settings.forced_retire フラグで制御。
+- 将来: run開始時に master_data_versions.version を run_state へ記録し、ラン中は開始時点のマスタスナップショットを参照する方式へ移行。
+
+## 5.9 不正な報酬獲得の防止（DBレイヤの寄与）
+
+1. pendingReward の claimed フラグ + status の一方向遷移（active→cleared/failed/retired→finalized）を**条件付きUPDATE**で検証（0行=先行処理済み）。
+2. currency_transactions.idempotency_key UNIQUE により、同一操作での二重加算をDB制約で最終遮断。
+3. 通貨のCHECK制約（`soul_shards >= 0`, `amount <> 0`）で負残高・ゼロ取引を排除。
+4. 詳細は 22_Security_Design.md。
+
+# 6. 論理削除・データ保持期間
+
+- **論理削除を採用するのは users のみ**（status='withdrawn' → 30日後にCASCADE物理削除バッチ。復会猶予と問い合わせ対応のため）。
+- その他のテーブルは物理削除（誤削除リスクはPITR 7日でカバー）。「削除フラグ列の乱立」は採用しない。
+
+| データ | 保持期間 | 削除方法 |
+|---|---|---|
+| 退会ユーザー | 30日 | Vercel Cron日次（users CASCADE） |
+| dungeon_runs（finalized） | 90日 | 日次バッチ |
+| dungeon_run_snapshots | ラン終了まで | finalize Tx内 |
+| battle_logs | 30日 | 日次バッチ |
+| audit_logs | 1年 | 月次バッチ |
+| idempotency_keys | 24時間 | 毎時バッチ |
+| announcements | 掲載終了後も保持（少量） | 手動 |
+
+# 7. Prismaスキーマ抜粋（4モデル例）
+
+命名規約（snake_case ⇔ camelCase の `@map`/`@@map`）と制約表現の実装例を示す。全モデルは実装フェーズで本書のテーブル定義から機械的に展開する。
+
+```prisma
+model User {
+  id             String    @id @default(uuid()) @db.Uuid
+  email          String?   @unique
+  passwordHash   String?   @map("password_hash")
+  isGuest        Boolean   @default(true) @map("is_guest")
+  role           Role      @default(user)
+  status         UserStatus @default(active)
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  lockedUntil    DateTime? @map("locked_until") @db.Timestamptz
+  withdrawnAt    DateTime? @map("withdrawn_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  profile        UserProfile?
+  runs           DungeonRun[]
+  @@map("users")
+}
+
+enum Role { user admin operator developer }
+enum UserStatus { active withdrawn }
+enum RunStatus { active cleared failed retired finalized }
+
+model DungeonRun {
+  id           String    @id @db.Uuid            // UUID v7をアプリ側で生成
+  userId       String    @map("user_id") @db.Uuid
+  dungeonCode  String    @map("dungeon_code")
+  difficulty   String    @default("normal")
+  seed         BigInt
+  status       RunStatus @default(active)
+  runState     Json      @map("run_state")        // 読み書き時にZod検証（validateRunState）
+  version      Int       @default(0)              // 楽観ロック
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  endedAt      DateTime? @map("ended_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user         User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, status])
+  // 部分UNIQUE（user_id WHERE status='active'）はPrisma非対応のためSQLマイグレーションで追加
+  @@map("dungeon_runs")
+}
+
+model Skill {
+  id            Int     @id @default(autoincrement())
+  code          String  @unique
+  name          String
+  description   String
+  skillType     String  @map("skill_type")   // active/passive/innate
+  rarity        String                        // common/rare/epic
+  spCost        Int     @map("sp_cost")
+  targetType    String  @map("target_type")  // single/all/self
+  element       String  @default("none")
+  maxLevel      Int     @default(3) @map("max_level")
+  characterCode String? @map("character_code") // 固有スキルのみ
+  isInnate      Boolean @default(false) @map("is_innate")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  effects       SkillEffect[]
+  @@map("skills")
+}
+
+model SkillEffect {
+  id           Int    @id @default(autoincrement())
+  skillId      Int    @map("skill_id")
+  order        Int
+  effectType   String @map("effect_type")     // damage/heal/buff/... (18_Skill_Design.md)
+  params       Json                            // effect_typeごとのZodスキーマで検証
+  levelScaling Json?  @map("level_scaling")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  skill        Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  @@unique([skillId, order])
+  @@map("skill_effects")
+}
+```
+
+# 8. シードデータ運用
+
+1. マスタ原本は `src/constants/masters/*.ts`（TypeScript定数、Zodで型検証）とし、Gitで履歴管理する。
+2. `prisma/seed.ts` が定数を読み込み、**upsert（codeキー）** で投入する。削除されたマスタは「無効化フラグ」ではなく物理DELETE（参照ランが残る場合はリリースノートで告知・§5.8の手順）。
+3. 投入完了時に master_data_versions へ `{version, applied_at, description}` をINSERTする。versionは `YYYYMMDD.n` 形式（仮決定）。
+4. 環境ごとの実行: local=`pnpm db:seed` / Preview・Production=デプロイパイプラインの `prisma migrate deploy && prisma db seed`。
+5. シード変更のレビュー観点: code重複なし / FK参照先の存在 / バランス変更はDecision Log記録。
+
+---
+
+## 未決事項
+
+- UUID v7生成ライブラリの選定（uuidv7 npm か Postgres 17移行待ちか）。実装初週に決定。
+- dungeon_runs（finalized）の90日保持は仮決定。分析ニーズ（勝率・離脱分析）が固まったら匿名化集計テーブルへの移行を検討。
+- レート制限をDBベースにする場合の専用テーブル追加（13_API_Design.md 未決事項と連動）。
+- Neonのオートスケール設定（compute min/max）は負荷テスト（21_Test_Design.md）後に確定。
+
+## 実装時の注意点
+
+- 部分UNIQUEインデックス・CHECK制約はPrismaスキーマで表現できないため、`prisma migrate dev --create-only` で生成したSQLに**手書き追記**し、マイグレーションファイルをレビュー対象とすること。
+- run_state の読み書きは必ず validateRunState（Zod）を通し、`prisma.dungeonRun.update` を直接呼ばず saveRunProgress ヘルパ経由に統一すること。
+- マイグレーションは**後方互換（列追加→コード切替→列削除の3段階）**を原則とし、リリース計画（26_Release_Plan.md）のロールバック手順と整合させること。
+- Neonでは接続に pooled connection string（`-pooler`）を使用し、Prismaの `directUrl` にはdirect接続を設定すること（マイグレーション用）。
+
+## 関連設計書
+
+- [13_API_Design.md](./13_API_Design.md) — 各テーブルを更新するAPIとトランザクション
+- [15_Save_Data_Design.md](./15_Save_Data_Design.md) — run_state詳細・スナップショット復旧
+- [20_Detailed_Design.md](./20_Detailed_Design.md) — saveRunProgress・grantPersistentRewards
+- [22_Security_Design.md](./22_Security_Design.md) — 不正対策とDB制約の対応
+- [23_Logging_Monitoring.md](./23_Logging_Monitoring.md) — ログテーブルの保持・削除バッチ
+- [18_Skill_Design.md](./18_Skill_Design.md) / [19_Enemy_AI_Design.md](./19_Enemy_AI_Design.md) — マスタJSONBのスキーマ出典
 
 
