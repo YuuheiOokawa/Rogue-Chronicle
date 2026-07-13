@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from 'next';
 
 import './globals.css';
 
+import { Providers } from './providers';
+
 export const metadata: Metadata = {
   title: 'Rogue Chronicle',
   description:
@@ -21,7 +23,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ja" className="h-full antialiased">
-      <body className="flex min-h-full flex-col bg-surface-base text-content">{children}</body>
+      <body className="flex min-h-full flex-col bg-surface-base text-content">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

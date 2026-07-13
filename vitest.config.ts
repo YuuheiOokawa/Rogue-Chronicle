@@ -2,6 +2,13 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
+// DB統合テスト（RUN_DB_TESTS=1時のみ実行）がDATABASE_URLを参照できるよう.envを読み込む（Node 22+）
+try {
+  process.loadEnvFile('.env');
+} catch {
+  // .envが無い環境（CI等）はシェル環境変数をそのまま使う
+}
+
 export default defineConfig({
   resolve: {
     alias: {
