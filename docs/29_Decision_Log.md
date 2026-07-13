@@ -236,6 +236,7 @@
 | DEC-243 | エラーハンドリングはAppErrorをthrowし共通ハンドラでHTTP変換（Result型不採用） | 24_Development_Guideline.md |
 | DEC-244 | パッケージマネージャはpnpm 10系（packageManagerフィールドで固定） | 24_Development_Guideline.md |
 | DEC-245 | ローカルDBは通常Docker PostgreSQL、Neon固有確認時のみNeonブランチ | 24_Development_Guideline.md |
+| DEC-246 | API-002/003/005（ログイン/ログアウト/ゲスト開始）はAuth.jsのsignIn/signOutで実現し、独立RESTエンドポイントは設けない。認証エラーコードはCredentialsSignin.codeでクライアントへ伝搬（Phase 2実装時決定） | 14_Authentication_Design.md / src/auth.ts |
 | DEC-250 | リポジトリ名はrogue-chronicle | 25_GitHub_Operation.md |
 | DEC-251 | リポジトリ可視性はPrivate推奨 | 25_GitHub_Operation.md |
 | DEC-252 | mainのbranch protection: PR必須・CIステータス必須・直push禁止（approval必須は設定しない） | 25_GitHub_Operation.md |
