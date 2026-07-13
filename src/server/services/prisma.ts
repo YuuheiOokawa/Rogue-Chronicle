@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 
 /**
  * PrismaClientのシングルトン。
@@ -12,3 +12,6 @@ export const prisma = globalForPrisma.prisma ?? new PrismaClient();
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma;
 }
+
+/** JSONBカラムへの書き込み型（app層が@prisma/clientを直接importしないための再エクスポート） */
+export type JsonInput = Prisma.InputJsonValue;
