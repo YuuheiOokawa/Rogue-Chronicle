@@ -1,8 +1,18 @@
+import { redirect } from 'next/navigation';
+
+import { auth } from '@/auth';
+import { TitleActions } from '@/features/auth/title-actions';
+
 /**
- * SCR-002 タイトル画面（Phase 1 プレースホルダ）。
- * 正式実装は Phase 2（認証導線）/ Phase 10（演出）。docs/09_Screen_Design.md §4.1 参照。
+ * SCR-002 タイトル画面（docs/09_Screen_Design.md §4.1）。
+ * ログイン済みならホームへ（再訪時の導線短縮）。
  */
-export default function TitlePage() {
+export default async function TitlePage() {
+  const session = await auth();
+  if (session?.userId) {
+    redirect('/home');
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-[480px] flex-1 flex-col items-center justify-between px-6 py-16">
       <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
@@ -13,18 +23,7 @@ export default function TitlePage() {
           敗北してもあなたの記録（クロニクル）は残り、次の挑戦を強くする。
         </p>
       </div>
-
-      <div className="flex w-full flex-col items-center gap-3">
-        <button
-          type="button"
-          disabled
-          className="h-12 w-full rounded-lg bg-primary font-semibold text-white opacity-50"
-          aria-disabled="true"
-        >
-          はじめる（Phase 2で実装）
-        </button>
-        <p className="text-xs text-content-muted">v0.1.0 — Phase 1: プロジェクト初期構築</p>
-      </div>
+      <TitleActions />
     </main>
   );
 }

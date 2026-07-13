@@ -1,8 +1,10 @@
 // Rogue Chronicle — Prisma schema
 // テーブル定義は docs/12_Database_Design.md を正とする。
-// Phase 3（マスタデータ・DB）でモデルを展開する。Phase 1 では接続設定のみ。
-// 部分UNIQUEインデックス・CHECK制約はPrismaで表現できないため、
-// マイグレーションSQLへ手書き追記する（docs/12 実装時の注意点）。
+// 方針:
+// - DB enumは使わない（DEC-240）。String + CHECK制約（migration SQLに手書き追記）+ Zod検証
+// - マスタ = 連番int PK + UNIQUEなcode / ユーザー・ラン系 = UUID（DEC-101）
+// - 部分UNIQUEインデックス（同時アクティブラン1つ）はPrisma非対応のためmigration SQLで追加
+// - JSONBカラムは読み書き時に必ずZodで検証する（docs/12 §5.2）
 
 generator client {
   provider = "prisma-client-js"
@@ -12,4 +14,616 @@ datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL") // Neon pooled接続（アプリ実行時）
   directUrl = env("DIRECT_URL") // Neon direct接続（prisma migrate用）
+}
+
+// ================================================================
+// マスタデータ（シードスクリプトで投入。docs/12 §4.1）
+// ================================================================
+
+model Character {
+  id                Int      @id @default(autoincrement())
+  code              String   @unique
+  name              String
+  description       String
+  element           String // none/fire/water/wind
+  baseStats         Json     @map("base_stats") // {maxHp,atk,def,spd,critRate,critDmg,eva,acc,statusRes}
+  growthRates       Json     @map("growth_rates") // 成長係数 {maxHp,atk,def,spd} 0.8〜1.2
+  favoredWeaponType String   @map("favored_weapon_type") // sword/staff/dagger
+  innateSkillCode   String   @map("innate_skill_code") // 固有能力（skills.code参照）
+  initialSkillCodes Json     @map("initial_skill_codes") // string[]
+  initialEquipCode  String?  @map("initial_equip_code") // 初期武器（equipment.code参照）
+  unlockCondition   Json     @map("unlock_condition") // {type:'initial'|'shards'|'achievement', ...}
+  sortOrder         Int      @default(0) @map("sort_order")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("characters")
+}
+
+model Equipment {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  name          String
+  description   String
+  slot          String // weapon/armor/accessory（DEC-017統合）
+  weaponType    String?  @map("weapon_type") // sword/staff/dagger（weaponのみ）
+  rarity        String // common/rare/epic
+  baseStats     Json     @map("base_stats") // 加算値 {atk?,def?,maxHp?,spd?,critRate?,...}
+  passiveEffect Json?    @map("passive_effect") // effect-params準拠（任意）
+  basePrice     Int      @map("base_price") // ショップ基準価格
+  isStarter     Boolean  @default(false) @map("is_starter") // 初期装備候補（永続解放）
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("equipment")
+}
+
+model Skill {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  name          String
+  description   String
+  skillType     String   @map("skill_type") // active/passive
+  rarity        String // common/rare/epic
+  spCost        Int      @default(0) @map("sp_cost")
+  targetType    String   @map("target_type") // enemy_single/enemy_all/self
+  element       String   @default("none")
+  maxLevel      Int      @default(3) @map("max_level")
+  characterCode String?  @map("character_code") // 固有スキルのみ（characters.code参照）
+  isInnate      Boolean  @default(false) @map("is_innate")
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  effects SkillEffect[]
+
+  @@map("skills")
+}
+
+model SkillEffect {
+  id           Int      @id @default(autoincrement())
+  skillId      Int      @map("skill_id")
+  order        Int
+  effectType   String   @map("effect_type") // docs/18 §2.3 の13種
+  params       Json // effect-params準拠（Lv1時点の値）
+  levelScaling Json?    @map("level_scaling") // {"2": {...上書き}, "3": {...}}
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([skillId, order])
+  @@map("skill_effects")
+}
+
+model Relic {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  name        String
+  description String
+  rarity      String // common/rare/epic
+  trigger     String // always/battle_start/turn_start/turn_end/on_low_hp/on_kill/node_enter
+  effect      Json // effect-params準拠
+  isCursed    Boolean  @default(false) @map("is_cursed")
+  synergyTags Json     @map("synergy_tags") // string[]
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("relics")
+}
+
+model Enemy {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  name           String
+  enemyType      String   @map("enemy_type") // normal/strong/elite/boss
+  element        String
+  baseStats      Json     @map("base_stats") // {maxHp,atk,def,spd,critRate,critDmg,eva,acc,statusRes}
+  baseExp        Int      @map("base_exp")
+  baseGold       Int      @map("base_gold")
+  dropTableCode  String?  @map("drop_table_code") // reward_tables.code参照
+  appearFloorMin Int      @map("appear_floor_min")
+  appearFloorMax Int      @map("appear_floor_max")
+  isSummon       Boolean  @default(false) @map("is_summon") // 召喚でのみ出現
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  actions EnemyAction[]
+  aiRules EnemyAiRule[]
+
+  @@map("enemies")
+}
+
+model EnemyAction {
+  id          Int      @id @default(autoincrement())
+  enemyId     Int      @map("enemy_id")
+  code        String
+  name        String
+  effects     Json // [{effectType, params}]（skill_effectsと同一ハンドラ共用）
+  intentIcon  String   @map("intent_icon")
+  intentLabel String   @map("intent_label")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  enemy Enemy @relation(fields: [enemyId], references: [id], onDelete: Cascade)
+
+  @@unique([enemyId, code])
+  @@map("enemy_actions")
+}
+
+model EnemyAiRule {
+  id         Int      @id @default(autoincrement())
+  enemyId    Int      @map("enemy_id")
+  priority   Int? // NULL=基本テーブル。小さいほど優先
+  bossPhase  Int?     @map("boss_phase") // ボスのみ。フェーズ限定ルール
+  conditions Json? // {hpBelow, turnMod, selfBuffMissing, allyCount, phaseIs...}
+  actionCode String   @map("action_code") // enemy_actions.code参照
+  weight     Int
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  enemy Enemy @relation(fields: [enemyId], references: [id], onDelete: Cascade)
+
+  @@index([enemyId, priority])
+  @@map("enemy_ai_rules")
+}
+
+model Dungeon {
+  id               Int      @id @default(autoincrement())
+  code             String   @unique
+  name             String
+  description      String
+  floors           Int
+  generationConfig Json     @map("generation_config") // docs/17のノード数・重み・制約
+  sortOrder        Int      @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  difficulties DungeonDifficulty[]
+
+  @@map("dungeons")
+}
+
+model DungeonDifficulty {
+  id              Int      @id @default(autoincrement())
+  dungeonId       Int      @map("dungeon_id")
+  code            String // normal/hard(将来)/nightmare(将来)
+  name            String
+  statMod         Float    @map("stat_mod") // 敵ステータス倍率
+  expMod          Float    @map("exp_mod")
+  rewardMod       Float    @map("reward_mod")
+  unlockCondition Json?    @map("unlock_condition")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  dungeon Dungeon @relation(fields: [dungeonId], references: [id], onDelete: Cascade)
+
+  @@unique([dungeonId, code])
+  @@map("dungeon_difficulties")
+}
+
+model DungeonNodeType {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique // BATTLE/STRONG/ELITE/BOSS/TREASURE/SHOP/REST/EVENT/BLESS/HEAL/CURSE/STORY/SECRET
+  name        String
+  iconKey     String   @map("icon_key")
+  description String
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("dungeon_node_types")
+}
+
+model RandomEvent {
+  id         Int      @id @default(autoincrement())
+  code       String   @unique
+  name       String
+  flavorText String   @map("flavor_text")
+  nodeType   String   @map("node_type") // 出現ノードタイプ（EVENT/BLESS/HEAL/CURSE/STORY/SECRET）
+  weight     Int      @default(100)
+  minFloor   Int      @default(1) @map("min_floor")
+  maxFloor   Int      @default(10) @map("max_floor")
+  sortOrder  Int      @default(0) @map("sort_order")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  choices RandomEventChoice[]
+
+  @@map("random_events")
+}
+
+model RandomEventChoice {
+  id        Int      @id @default(autoincrement())
+  eventId   Int      @map("event_id")
+  order     Int
+  label     String
+  outcomes  Json // [{probability, resultText, effects: [...]}]（確率合計100）
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  event RandomEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, order])
+  @@map("random_event_choices")
+}
+
+model RewardTable {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  description String
+  entries     Json // [{weight, rewardType: 'equipment'|'gold'|'consumable'|'relic', params}]
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("reward_tables")
+}
+
+model UpgradeNode {
+  id               Int      @id @default(autoincrement())
+  code             String   @unique
+  name             String
+  description      String
+  effect           Json // {type: 'startHpPct'|'startAtkPct'|'startGold'|'startRelic'|'rerollPlus'|'shardGainPct', valuePerRank}
+  maxRank          Int      @map("max_rank")
+  costPerRank      Json     @map("cost_per_rank") // int[]（rank1..maxRankの各コスト）
+  prerequisiteCode String?  @map("prerequisite_code") // upgrade_nodes.code参照
+  sortOrder        Int      @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("upgrade_nodes")
+}
+
+model Achievement {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  name        String
+  description String
+  condition   Json // {type: 'totalRuns'|'totalClears'|'totalKills'|'bestFloor'|..., value}
+  reward      Json? // {type: 'characterUnlock'|'shards', value}
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("achievements")
+}
+
+model Story {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  title           String
+  body            String
+  unlockCondition Json     @map("unlock_condition")
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("stories")
+}
+
+model MasterDataVersion {
+  id          Int      @id @default(autoincrement())
+  version     String   @unique // YYYYMMDD.n
+  description String
+  appliedAt   DateTime @default(now()) @map("applied_at") @db.Timestamptz()
+
+  @@map("master_data_versions")
+}
+
+// ================================================================
+// ユーザー永続データ（docs/12 §4.2）
+// ================================================================
+
+model User {
+  id             String    @id @db.Uuid
+  email          String?   @unique
+  passwordHash   String?   @map("password_hash")
+  isGuest        Boolean   @default(true) @map("is_guest")
+  role           String    @default("user") // user/admin/operator/developer
+  status         String    @default("active") // active/withdrawn
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  lockedUntil    DateTime? @map("locked_until") @db.Timestamptz()
+  withdrawnAt    DateTime? @map("withdrawn_at") @db.Timestamptz()
+  lastAccessAt   DateTime? @map("last_access_at") @db.Timestamptz()
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  profile         UserProfile?
+  settings        UserSettings?
+  authSessions    AuthSession[]
+  progress        PlayerProgress?
+  currencies      PlayerCurrency?
+  characters      PlayerCharacter[]
+  equipment       PlayerEquipment[]
+  upgrades        PlayerUpgrade[]
+  codex           PlayerCodex[]
+  achievements    PlayerAchievement[]
+  storyProgress   PlayerStoryProgress[]
+  transactions    CurrencyTransaction[]
+  runs            DungeonRun[]
+  idempotencyKeys IdempotencyKey[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  userId      String   @id @map("user_id") @db.Uuid
+  displayName String   @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model UserSettings {
+  userId        String   @id @map("user_id") @db.Uuid
+  battleSpeed   Int      @default(1) @map("battle_speed") // 1 or 2
+  damageDisplay Boolean  @default(true) @map("damage_display")
+  screenShake   Boolean  @default(true) @map("screen_shake")
+  colorAssist   Boolean  @default(false) @map("color_assist")
+  tutorialDone  Boolean  @default(false) @map("tutorial_done")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// Auth.js JWT戦略のため最小構成（失効管理・監査用。docs/14 §5）
+model AuthSession {
+  id        String    @id @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  userAgent String?   @map("user_agent")
+  ip        String?
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz()
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+model PlayerProgress {
+  userId      String   @id @map("user_id") @db.Uuid
+  rank        Int      @default(1)
+  rankExp     Int      @default(0) @map("rank_exp")
+  totalRuns   Int      @default(0) @map("total_runs")
+  totalClears Int      @default(0) @map("total_clears")
+  totalKills  Int      @default(0) @map("total_kills")
+  bestFloor   Int      @default(0) @map("best_floor")
+  version     Int      @default(0) // 楽観ロック
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("player_progress")
+}
+
+model PlayerCurrency {
+  userId     String   @id @map("user_id") @db.Uuid
+  soulShards Int      @default(0) @map("soul_shards") // CHECK >= 0（migration SQL）
+  version    Int      @default(0) // 楽観ロック
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("player_currencies")
+}
+
+model PlayerCharacter {
+  id            Int      @id @default(autoincrement())
+  userId        String   @map("user_id") @db.Uuid
+  characterCode String   @map("character_code")
+  unlockedAt    DateTime @default(now()) @map("unlocked_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, characterCode])
+  @@map("player_characters")
+}
+
+model PlayerEquipment {
+  id            Int      @id @default(autoincrement())
+  userId        String   @map("user_id") @db.Uuid
+  equipmentCode String   @map("equipment_code")
+  unlockedAt    DateTime @default(now()) @map("unlocked_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, equipmentCode])
+  @@map("player_equipment")
+}
+
+model PlayerUpgrade {
+  id              Int      @id @default(autoincrement())
+  userId          String   @map("user_id") @db.Uuid
+  upgradeNodeCode String   @map("upgrade_node_code")
+  rank            Int      @default(1)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, upgradeNodeCode])
+  @@map("player_upgrades")
+}
+
+model PlayerCodex {
+  id           Int      @id @default(autoincrement())
+  userId       String   @map("user_id") @db.Uuid
+  entryType    String   @map("entry_type") // skill/relic/enemy/equipment/character（DEC-018）
+  entryCode    String   @map("entry_code")
+  discoveredAt DateTime @default(now()) @map("discovered_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entryType, entryCode])
+  @@map("player_codex")
+}
+
+model PlayerAchievement {
+  id              Int      @id @default(autoincrement())
+  userId          String   @map("user_id") @db.Uuid
+  achievementCode String   @map("achievement_code")
+  unlockedAt      DateTime @default(now()) @map("unlocked_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementCode])
+  @@map("player_achievements")
+}
+
+model PlayerStoryProgress {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id") @db.Uuid
+  storyCode String   @map("story_code")
+  readAt    DateTime @default(now()) @map("read_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, storyCode])
+  @@map("player_story_progress")
+}
+
+model CurrencyTransaction {
+  id             String   @id @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  currency       String // gold/soul_shards（goldはラン内通貨のため通常soul_shardsのみ）
+  amount         Int // CHECK <> 0（migration SQL）
+  balanceAfter   Int      @map("balance_after")
+  reason         String // run_finalize/character_unlock/upgrade/compensation...
+  refId          String?  @map("ref_id") // run_id等
+  idempotencyKey String?  @unique @map("idempotency_key")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("currency_transactions")
+}
+
+// ================================================================
+// ラン一時データ（docs/12 §4.3）
+// ================================================================
+
+model DungeonRun {
+  id          String    @id @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  dungeonCode String    @map("dungeon_code")
+  difficulty  String    @default("normal")
+  seed        BigInt
+  status      String    @default("active") // active/cleared/failed/retired/finalized（CHECK + 部分UNIQUEはSQL）
+  runState    Json      @map("run_state") // validateRunState（Zod）必須
+  version     Int       @default(0) // 楽観ロック
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz()
+  endedAt     DateTime? @map("ended_at") @db.Timestamptz()
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshots DungeonRunSnapshot[]
+
+  @@index([userId, status])
+  @@map("dungeon_runs")
+}
+
+model DungeonRunSnapshot {
+  id         Int      @id @default(autoincrement())
+  runId      String   @map("run_id") @db.Uuid
+  generation Int
+  runState   Json     @map("run_state")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  run DungeonRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, generation])
+  @@map("dungeon_run_snapshots")
+}
+
+model BattleLog {
+  id         Int      @id @default(autoincrement())
+  runId      String   @map("run_id") @db.Uuid // 意図的にFKなし（ラン削除後もログは保持期間まで残す）
+  userId     String   @map("user_id") @db.Uuid
+  floor      Int
+  nodeId     String   @map("node_id")
+  enemyCodes Json     @map("enemy_codes") // string[]
+  result     String // win/lose/fled
+  turns      Json // ActionLogEntry[]（保持30日）
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@index([runId])
+  @@index([createdAt]) // 30日削除バッチ用
+  @@map("battle_logs")
+}
+
+// ================================================================
+// 運用データ（docs/12 §4.4）
+// ================================================================
+
+model Announcement {
+  id          Int       @id @default(autoincrement())
+  title       String
+  body        String
+  category    String // update/maintenance/event
+  publishedAt DateTime  @map("published_at") @db.Timestamptz()
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz()
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([publishedAt])
+  @@map("announcements")
+}
+
+model MaintenanceSetting {
+  id           Int       @id @default(1) // 常に1行
+  enabled      Boolean   @default(false)
+  message      String?
+  forcedRetire Boolean   @default(false) @map("forced_retire") // ISSUE-004運用
+  startsAt     DateTime? @map("starts_at") @db.Timestamptz()
+  endsAt       DateTime? @map("ends_at") @db.Timestamptz()
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("maintenance_settings")
+}
+
+model AuditLog {
+  id        String   @id @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid // 意図的にFKなし（退会後も1年保持）
+  action    String // login_failed/account_locked/withdraw/guest_link/invalid_action...
+  detail    Json?
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@index([userId, createdAt])
+  @@index([createdAt]) // 1年削除バッチ用
+  @@map("audit_logs")
+}
+
+model IdempotencyKey {
+  userId      String   @map("user_id") @db.Uuid
+  key         String
+  apiId       String   @map("api_id")
+  requestHash String   @map("request_hash")
+  statusCode  Int?     @map("status_code") // NULL=処理中
+  response    Json?
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz()
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, key])
+  @@index([expiresAt]) // 24h削除バッチ用
+  @@map("idempotency_keys")
 }
