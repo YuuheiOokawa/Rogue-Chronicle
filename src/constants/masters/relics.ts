@@ -1,0 +1,127 @@
+// レリックマスタ 10種・呪い付き2種含む（docs/18_Skill_Design.md §7.3 完全転記）
+// effect JSONB: effect_type名のキー（heal/stat_passive/sp_gain等）はskill_effectsと同一paramsスキーマ、
+// それ以外（goldGainPct/statusBoost/thresholdPct/mode等）はレリック専用キー（docs/18 §7.3の表記を保持）
+// mode:'pct' は stat_passive.stats を加算値ではなく割合(%)として適用するモード（docs/18 §7.3 ※%注記）
+import type { RelicMaster } from './types';
+
+export const RELICS: RelicMaster[] = [
+  {
+    code: 'lucky_coin',
+    name: '幸運のコイン',
+    description: 'ゴールド獲得量が+20%される。',
+    rarity: 'common',
+    trigger: 'always',
+    effect: { goldGainPct: 20 },
+    isCursed: false,
+    synergyTags: ['gold'],
+    sortOrder: 1,
+  },
+  {
+    code: 'explorer_compass',
+    name: '探索者の羅針盤',
+    description: 'ノード進入時にHPが2%回復する。',
+    rarity: 'common',
+    trigger: 'node_enter',
+    effect: { heal: { hpPctOfMax: 2 } },
+    isCursed: false,
+    synergyTags: ['exploration', 'sustain'],
+    sortOrder: 2,
+  },
+  {
+    code: 'healing_herb',
+    name: '癒しの薬草',
+    description: 'ターン終了時にHPが2%回復する。',
+    rarity: 'common',
+    trigger: 'turn_end',
+    effect: { heal: { hpPctOfMax: 2 } },
+    isCursed: false,
+    synergyTags: ['sustain', 'defense'],
+    sortOrder: 3,
+  },
+  {
+    code: 'venom_ring',
+    name: '毒蛇の指輪',
+    description: '毒のスリップダメージが+50%され、毒の継続ターンが+1される。',
+    rarity: 'rare',
+    trigger: 'always',
+    effect: { statusBoost: { status: 'poison', dmgPct: 50, extraTurns: 1 } },
+    isCursed: false,
+    synergyTags: ['poison'],
+    sortOrder: 4,
+  },
+  {
+    code: 'eagle_eye',
+    name: '鷹の眼',
+    description: 'クリティカル率が+10%される。',
+    rarity: 'rare',
+    trigger: 'always',
+    effect: { stat_passive: { stats: { critRate: 10 } } },
+    isCursed: false,
+    synergyTags: ['crit'],
+    sortOrder: 5,
+  },
+  {
+    code: 'iron_heart',
+    name: '鉄の心臓',
+    description: '防御力が+15%され、シールド効果が+30%される。',
+    rarity: 'rare',
+    trigger: 'always',
+    effect: { stat_passive: { stats: { def: 15 } }, mode: 'pct', shieldBoostPct: 30 },
+    isCursed: false,
+    synergyTags: ['defense'],
+    sortOrder: 6,
+  },
+  {
+    code: 'blood_amulet',
+    name: '血の護符',
+    description: '戦闘開始時に現HPの5%を失う代わりに、その戦闘中は攻撃力が+15%される。',
+    rarity: 'rare',
+    trigger: 'battle_start',
+    // hpCostCurrentPct: 現HP基準%消費 / permanentBuff: 戦闘終了まで持続（turns無期限のためbuff型と別キー）
+    effect: { hpCostCurrentPct: 5, permanentBuff: { buff: 'atkUp', valuePct: 15 } },
+    isCursed: true,
+    synergyTags: ['tempo'],
+    sortOrder: 7,
+  },
+  {
+    code: 'soul_eater',
+    name: '魂喰らい',
+    description: '敵を1体撃破するたびにSP+2、HPが3%回復する。',
+    rarity: 'epic',
+    trigger: 'on_kill',
+    effect: { sp_gain: { amount: 2 }, heal: { hpPctOfMax: 3 } },
+    isCursed: false,
+    synergyTags: ['sustain', 'tempo'],
+    sortOrder: 8,
+  },
+  {
+    code: 'berserker_mask',
+    name: '狂戦士の仮面',
+    description: '攻撃力が+25%される。ただし防御力が-15%される。',
+    rarity: 'epic',
+    trigger: 'always',
+    effect: { stat_passive: { stats: { atk: 25, def: -15 } }, mode: 'pct' },
+    isCursed: true,
+    synergyTags: ['crit', 'tempo'],
+    sortOrder: 9,
+  },
+  {
+    code: 'last_stand',
+    name: '執念の御守り',
+    description: 'HP30%以下の間、攻撃力+20%・被ダメージ-20%される。',
+    rarity: 'epic',
+    trigger: 'on_low_hp',
+    effect: {
+      thresholdPct: 30,
+      stat_passive: { stats: { atk: 20, dmgTakenPct: -20 } },
+      mode: 'pct',
+    },
+    isCursed: false,
+    synergyTags: ['defense', 'sustain'],
+    sortOrder: 10,
+  },
+];
+
+// --- docs間の差異と採用判断 ---
+// - blood_amuletの「戦闘中永続atk+15%」: buff paramsはturns必須（int>=1）のため、
+//   期限なしバフを `permanentBuff`（レリック専用キー）で表現した（意味は docs/18 §7.3 と同一）

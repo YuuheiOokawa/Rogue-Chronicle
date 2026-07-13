@@ -253,9 +253,14 @@
 | DEC-265 | 無料枠有料化を検討する閾値（Neon compute月150時間超等）の定義 | 26_Release_Plan.md |
 | DEC-270 | MVP完成（Phase 12終了）まで6〜9ヶ月を計画値とし、9ヶ月超過見込みでMVP範囲再削減を発動 | 27_Roadmap.md |
 | DEC-271 | 戦闘バランス目標帯（初見クリア率5〜15%、10ラン後30〜50%）は仮置き、βの実測で見直す | 27_Roadmap.md |
+| DEC-272 | 消耗品はdocs/17のpotion/hi_potion/antidoteを採用（docs/05のsp_potionは不採用）。hi_potionの回復量は全設計書に未記載のためHP100%と仮決定。消耗品はマスタテーブル化せずTS定数で保持 | src/constants/items.ts |
+| DEC-273 | ruin_guardianの怒り状態（HP50%以下でatk+30%恒久）は enemies に専用列がないため base_stats JSONB 内の`enrage`キーで保持（combatStatsSchemaへ非破壊追加） | src/constants/masters/enemies.ts |
+| DEC-274 | guardian_roar（docs/19表記は status:atkDown）は atkDown がSTATUS_CODESでなくDEBUFF_CODESのため effect_type=debuff（敵専用拡張キーchancePct付き）へ正規化 | src/constants/masters/enemies.ts |
+| DEC-275 | blood_amuletの「戦闘中永続atk+15%」は buff params（turns必須int>=1）で表現できないためレリック専用キー`permanentBuff`で表現 | src/constants/masters/relics.ts |
+| DEC-276 | 敵ドロップ発生率（通常10/強敵30/エリート50/ボス100%）は reward_tables に列がないためTS定数 DROP_CHANCE_PCT_BY_ENEMY_TYPE で保持 | src/constants/masters/reward-tables.ts |
 
 - 注: DEC-104〜105は12_Database_Design.md内で欠番（未使用）。欠番は再利用しない（記載ルール準拠）。
-- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 272以降は空き番号。
+- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 277以降は空き番号。
 
 ## 未決事項
 - 本ログはDEC-001〜020を初期採録した。以後の決定は追記制とし、`28_Open_Issues.md` の課題が決着するたびに本ログへ転記する。

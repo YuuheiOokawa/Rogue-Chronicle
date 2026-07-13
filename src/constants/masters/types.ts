@@ -39,6 +39,9 @@ export const combatStatsSchema = z.object({
   statusRes: z.number().min(0).max(100),
   maxSp: z.number().int().min(0).optional(), // プレイヤーのみ（共通10。docs/05 §1.1）
   elemRes: z.partialRecord(elementSchema, z.number()).optional(), // 敵のみ（MVPは全敵なし）
+  // ボス専用: 怒り状態（docs/19 §6.3）。hp/maxHp <= hpBelow で恒久atk+atkUpPct%（解除不能・バフ枠外）。
+  // enemiesテーブルに専用列がないため base_stats JSONB 内に保持する（追加は非破壊）
+  enrage: z.object({ hpBelow: z.number().min(0).max(1), atkUpPct: z.number().min(0) }).optional(),
 });
 export type CombatStats = z.infer<typeof combatStatsSchema>;
 
