@@ -60,17 +60,19 @@ export function RunMap({ initialView }: { initialView: ServerRunView }) {
   const [pending, run] = usePending();
 
   // 操作後の再取得（初期表示はサーバーコンポーネントから受け取る）
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<RunView | undefined> => {
     const res = await fetch('/api/v1/runs/current');
     if (res.status === 404) {
       router.push('/dungeons');
-      return;
+      return undefined;
     }
     if (!res.ok) {
       setError('冒険データの取得に失敗しました。再読み込みしてください。');
-      return;
+      return undefined;
     }
-    setView((await res.json()) as RunView);
+    const next = (await res.json()) as RunView;
+    setView(next);
+    return next;
   }, [router]);
 
   const selectNode = (nodeId: string) =>
@@ -101,12 +103,17 @@ export function RunMap({ initialView }: { initialView: ServerRunView }) {
         setError(body?.message ?? '移動に失敗しました');
         return;
       }
+      const nodeType = body?.node?.type ?? '';
+      const isBattleNode = nodeType === 'BATTLE' || nodeType === 'STRONG' || nodeType === 'ELITE' || nodeType === 'BOSS';
       setLastResult(
-        body?.cleared
-          ? 'ボス撃破！ダンジョンクリア！'
-          : `${NODE_LABEL[body?.node?.type ?? ''] ?? ''}マスを通過（階層${body?.node?.floor}）`,
+        isBattleNode
+          ? `${NODE_LABEL[nodeType] ?? ''}が発生！（階層${body?.node?.floor}）`
+          : `${NODE_LABEL[nodeType] ?? ''}マスを通過（階層${body?.node?.floor}）`,
       );
-      await load();
+      const next = await load();
+      if (next?.position.phase === 'battle') {
+        router.push('/run/battle');
+      }
     });
 
   const retire = () =>
@@ -172,7 +179,6 @@ export function RunMap({ initialView }: { initialView: ServerRunView }) {
       {lastResult ? (
         <p role="status" className="rounded-lg bg-surface-raised px-3 py-2 text-sm">
           {lastResult}
-          <span className="ml-2 text-xs text-content-muted">（Phase 6で戦闘実装予定・現在は自動通過）</span>
         </p>
       ) : null}
 
