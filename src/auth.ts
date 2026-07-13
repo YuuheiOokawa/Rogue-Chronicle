@@ -33,6 +33,9 @@ function ipFromRequest(request: Request): string {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // AUTH_TRUST_HOST環境変数だけに頼らず設定オブジェクトへも明示する
+  // （UntrustedHostエラー対策。Auth.js v5は自動検出に失敗するケースがあるため二重で保証する）
+  trustHost: true,
   session: {
     strategy: 'jwt',
     maxAge: 30 * 24 * 60 * 60, // 最大30日（スライド更新）
