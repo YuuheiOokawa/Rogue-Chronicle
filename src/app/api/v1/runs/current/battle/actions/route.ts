@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 
 import { CHARACTERS } from '@/constants/masters/characters';
 import { ENEMIES } from '@/constants/masters/enemies';
+import { EQUIPMENT } from '@/constants/masters/equipment';
+import { RELICS } from '@/constants/masters/relics';
+import { REWARD_TABLES } from '@/constants/masters/reward-tables';
 import { SKILLS } from '@/constants/masters/skills';
 import { checkBattleEnd } from '@/domain/battle/check-end';
 import { InvalidBattleActionError, executePlayerAction } from '@/domain/battle/execute-player-action';
@@ -170,6 +173,12 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
           state.position.floor,
           NORMAL_REWARD_MOD,
           NORMAL_REWARD_MOD,
+          // ドロップ抽選（Phase7 reward-tables連携）はPhase8のリザルト精算とあわせて本格導入する
+          // ため、Phase6互換のこの経路では引き続きドロップなし（dropTableCode=null）で据え置く
+          // （実装指示: 「変更禁止」ではないがPhase6挙動を壊さない最小修正の方針）。
+          null,
+          state.relics,
+          { rewardTables: REWARD_TABLES, equipment: EQUIPMENT, relics: RELICS },
           rng,
         );
         gold = state.gold + reward.gold;

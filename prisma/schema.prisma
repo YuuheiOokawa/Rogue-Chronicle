@@ -393,14 +393,16 @@ model AuthSession {
 }
 
 model PlayerProgress {
-  userId      String   @id @map("user_id") @db.Uuid
-  rank        Int      @default(1)
-  rankExp     Int      @default(0) @map("rank_exp")
-  totalRuns   Int      @default(0) @map("total_runs")
-  totalClears Int      @default(0) @map("total_clears")
-  totalKills  Int      @default(0) @map("total_kills")
-  bestFloor   Int      @default(0) @map("best_floor")
-  version     Int      @default(0) // 楽観ロック
+  userId       String   @id @map("user_id") @db.Uuid
+  rank         Int      @default(1)
+  rankExp      Int      @default(0) @map("rank_exp")
+  totalRuns    Int      @default(0) @map("total_runs")
+  totalClears  Int      @default(0) @map("total_clears")
+  totalKills   Int      @default(0) @map("total_kills")
+  bestFloor    Int      @default(0) @map("best_floor")
+  totalDefeats Int      @default(0) @map("total_defeats") // 敗北回数（ach_first_defeat用。Phase7で追加）
+  eliteKills   Int      @default(0) @map("elite_kills") // エリート撃破累計（achievements condition type='eliteKills'用。Phase7で追加）
+  version      Int      @default(0) // 楽観ロック
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz()
 
