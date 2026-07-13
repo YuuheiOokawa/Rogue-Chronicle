@@ -2,18 +2,19 @@ import { z } from 'zod';
 
 import type { CharacterMaster, EquipmentMaster } from '@/constants/masters/types';
 
+import { battleStateSchema } from '../battle/types';
 import { dungeonMapSchema, type DungeonMap } from './map-types';
 
 /**
  * run_state（dungeon_runs.run_state JSONB）のスキーマと初期化（docs/15 / CORE_SPEC §8）。
  * - 読み書きは必ず validateRunState を通す（破損・改ざん検知 → ERR_RUN_STATE_INVALIDはserver層で変換）
  * - schemaVersion: 構造変更時にインクリメントし、旧版はマイグレーション関数で引き上げる
- * - Phase 5時点: phaseは map_select のみ（battle / reward_pending は Phase 6/7 で追加）
+ * - Phase 6時点: phaseに'battle'を追加（P7で'node_action','reward_pending'を追加予定）
  */
 
 export const RUN_STATE_SCHEMA_VERSION = 1;
 
-export const runPhaseSchema = z.enum(['map_select']); // P6: 'battle' / P7: 'node_action','reward_pending' を追加予定
+export const runPhaseSchema = z.enum(['map_select', 'battle']); // P7: 'node_action','reward_pending' を追加予定
 export type RunPhase = z.infer<typeof runPhaseSchema>;
 
 export const runCharacterSchema = z.object({
@@ -68,6 +69,8 @@ export const runStateSchema = z.object({
   relics: z.array(z.string()),
   items: z.array(z.object({ code: z.string(), count: z.number().int().min(0).max(5) })),
   gold: z.number().int().min(0),
+  /** phase='battle'のときのみ非null（docs/20 §2.6 startBattle。Phase6で追加） */
+  battle: battleStateSchema.nullable(),
   rngCursor: z.number().int().min(0),
   earned: z.object({
     soulShards: z.number().int().min(0),
@@ -90,6 +93,12 @@ export function validateRunState(raw: unknown): RunState {
   }
   if (state.character.sp > state.character.maxSp) {
     throw new RangeError('sp exceeds maxSp');
+  }
+  if (state.position.phase === 'battle' && state.battle === null) {
+    throw new RangeError('phase is battle but battle is null');
+  }
+  if (state.position.phase !== 'battle' && state.battle !== null) {
+    throw new RangeError('battle must be null unless phase is battle');
   }
   if (state.position.nodeId !== null) {
     const exists = state.map.floors.flat().some((n) => n.id === state.position.nodeId);
@@ -176,6 +185,7 @@ export function createInitialRunState(params: InitialRunStateParams): RunState {
     relics: [],
     items: [...INITIAL_ITEMS],
     gold: 0,
+    battle: null,
     rngCursor: params.rngCursor,
     earned: { soulShards: 0, rankExp: 0, kills: 0 },
     lastRequest: null,
