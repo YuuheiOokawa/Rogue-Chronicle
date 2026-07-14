@@ -173,6 +173,15 @@ export const runStateSchema = z.object({
    * weakenを付与し、消費後はnullへ戻す設計とする（apply-effects.tsのコード冒頭コメントに詳細）。
    */
   nextBattleDebuff: z.enum(['weaken']).nullable(),
+  /**
+   * イベント効果 startBattle(encounter='fixed', bonusGold) 由来の戦闘勝利ボーナスゴールド
+   * （Phase7 EV-10「盗賊の待ち伏せ」等。apply-effects.ts の ApplyEventEffectsResult.battleBonusGold
+   * コメント参照）。domain/battle/types.ts の BattleState へフィールド追加することはdomain/battle配下
+   * 変更禁止のため、run_state側の一時フィールドとして次の戦闘決着まで保持する（実装判断）。
+   * API-506（イベント選択）で戦闘が発生した際に設定し、API-402（戦闘行動）が戦闘終了時に
+   * 勝利なら通常報酬へ加算、勝敗を問わず0へリセットする。
+   */
+  pendingBattleBonusGold: z.number().int().min(0),
   rngCursor: z.number().int().min(0),
   earned: z.object({
     soulShards: z.number().int().min(0),
@@ -312,9 +321,19 @@ export function createInitialRunState(params: InitialRunStateParams): RunState {
     battle: null,
     pendingReward: null,
     nextBattleDebuff: null,
+    pendingBattleBonusGold: 0,
     rngCursor: params.rngCursor,
     earned: { soulShards: 0, rankExp: 0, kills: 0, eliteKills: 0 },
-    encountered: { enemies: [], skills: [], relics: [], equipment: [] },
+    // 初期装備も「このランで所持している装備」のためencountered.equipmentへ含める
+    // （API-507装備変更の所持判定・図鑑差分の両方でrun開始時点から一貫させるための実装判断）。
+    encountered: {
+      enemies: [],
+      skills: [],
+      relics: [],
+      equipment: [equipment.weapon, equipment.armor, equipment.accessory]
+        .filter((e): e is EquipmentMaster => e !== null)
+        .map((e) => e.code),
+    },
     lastRequest: null,
   };
 }

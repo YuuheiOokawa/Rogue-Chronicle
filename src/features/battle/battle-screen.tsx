@@ -27,6 +27,7 @@ interface BattleActionResponse {
   reward?: { gold: number; exp: number; drops: unknown[] };
   levelUp?: { levels: number };
   runStatus: 'active' | 'cleared' | 'failed';
+  position: { phase: string };
 }
 
 const ACTOR_LABEL: Record<string, string> = { player: 'あなた' };
@@ -229,7 +230,8 @@ export function BattleScreen({
 
   const returnToMap = () => {
     void queryClient.invalidateQueries({ queryKey: ['battle'] });
-    router.push('/run/map');
+    // Phase7: 勝利でレベルアップ→スキル3択が発生した場合はreward画面へ（docs/27 Phase7）
+    router.push(endOverlay?.position.phase === 'reward_pending' ? '/run/reward' : '/run/map');
   };
 
   return (

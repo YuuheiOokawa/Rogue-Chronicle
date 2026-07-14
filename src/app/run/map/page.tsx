@@ -28,5 +28,13 @@ export default async function RunMapPage() {
     redirect('/dungeons');
   }
 
+  // phaseに応じた画面へ強制遷移（リロード復帰時、docs/27 Phase7・Phase9で本格対応予定の簡易版）
+  if (run.status === 'active' && state.position.phase === 'battle') {
+    redirect('/run/battle');
+  }
+  if (run.status === 'active' && state.position.phase === 'reward_pending') {
+    redirect('/run/reward');
+  }
+
   return <RunMap initialView={toRunView(run, state)} />;
 }

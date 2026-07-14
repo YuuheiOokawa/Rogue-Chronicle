@@ -33,3 +33,11 @@ export const retireSchema = z
     version: z.number().int().min(0),
   })
   .strict();
+
+/** API-307 リザルト確定（finalize） */
+export const finalizeSchema = z
+  .object({
+    version: z.number().int().min(0),
+  })
+  .strict();
+export type FinalizeInput = z.infer<typeof finalizeSchema>;

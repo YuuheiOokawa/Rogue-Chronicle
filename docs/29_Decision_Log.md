@@ -265,9 +265,16 @@
 | DEC-274 | guardian_roar（docs/19表記は status:atkDown）は atkDown がSTATUS_CODESでなくDEBUFF_CODESのため effect_type=debuff（敵専用拡張キーchancePct付き）へ正規化 | src/constants/masters/enemies.ts |
 | DEC-275 | blood_amuletの「戦闘中永続atk+15%」は buff params（turns必須int>=1）で表現できないためレリック専用キー`permanentBuff`で表現 | src/constants/masters/relics.ts |
 | DEC-276 | 敵ドロップ発生率（通常10/強敵30/エリート50/ボス100%）は reward_tables に列がないためTS定数 DROP_CHANCE_PCT_BY_ENEMY_TYPE で保持 | src/constants/masters/reward-tables.ts |
+| DEC-280 | レベルアップ時のスキル3択は、docs/13 API-501の「levelup_queue/remaining」キュー機構を導入せず、run_state.pendingReward.skill_choiceに単一ラウンドのみ保持する（複数レベルアップ同時発生時も3択提示は1回・リロールは1回まで）。Phase7基盤（run-state.tsスキーマ）に既にqueueフィールドが存在しないため、それに合わせた実装判断 | src/domain/dungeon/run-state.ts / src/app/api/v1/runs/current/battle/actions/route.ts |
+| DEC-281 | 宝箱（API-503）・ショップ購入（API-504）で得た装備/レリックは、docs/13原文の「API-507/508で受領確認」を経由せずその場でrun_stateへ直接反映する（装備は該当スロットへ即装着、レリックはrelics配列へ即追加）。RunStateの装備スロットは3枠固定で予備在庫を持たない設計のため受領確認ステップの意義が薄く、Phase7実装指示も直接反映を明示していたため。API-508はtreasure経由レリックの予備的な単体確認用途として残置 | src/app/api/v1/runs/current/treasure/open/route.ts / shop/purchase/route.ts / relic/route.ts |
+| DEC-282 | イベント効果startBattle(fixed, bonusGold)（EV-10「盗賊の待ち伏せ」等）の戦闘勝利ボーナスゴールドは、domain/battle/types.tsのBattleState（変更禁止）へ持たせられないため、run_state.pendingBattleBonusGoldという一時フィールドを新設。API-506で戦闘開始時に設定し、API-402が勝敗確定時に消費する（勝利時のみ通常報酬へ加算、勝敗を問わず0へリセット） | src/domain/dungeon/run-state.ts / src/app/api/v1/runs/current/battle/actions/route.ts / event/choose/route.ts |
+| DEC-283 | 装備の「所持」判定はRunStateに予備在庫（未装着の控え）が無いため、run_state.encountered.equipment（このランで一度でも入手したコード。createInitialRunStateで初期装備も種付けする）を代用する。API-507のequipアクションはencountered.equipmentに含まれるコードのみ許可し、一度差し替えた装備でも再装着できる | src/domain/dungeon/run-state.ts / src/domain/dungeon/run-equipment.ts / src/app/api/v1/runs/current/equipment/route.ts |
+| DEC-284 | 戦闘勝利によるレベルアップ時のスキル3択（pendingReward=skill_choice）は、ボス撃破（nextStatus='cleared'、別担当のリザルトフローへ直結）の場合は提示しない。ボス戦のレベルアップはそのまま反映し、通常戦闘の勝利時のみ3択を挟む（別担当実装との競合回避） | src/app/api/v1/runs/current/battle/actions/route.ts |
+| DEC-285 | 休憩（API-505）に、docs/13原文のheal/upgrade_skillの2択に加え「delete_skill」（所持スキルの削除）を追加する。固有スキル（isInnate）は削除不可とする（Phase7実装指示に基づく） | src/app/api/v1/runs/current/rest/route.ts |
+| DEC-286 | 重複レリック受領時の代替は+50ゴールドとする（docs/13 API-508コメントの仮決定を踏襲し、API-503の宝箱経由レリック受領にも同一ルールを適用） | src/app/api/v1/runs/current/treasure/open/route.ts / relic/route.ts |
 
 - 注: DEC-104〜105は12_Database_Design.md内で欠番（未使用）。欠番は再利用しない（記載ルール準拠）。
-- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 277以降は空き番号。
+- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 277〜279 / 287以降は空き番号。
 
 ## 未決事項
 - 本ログはDEC-001〜020を初期採録した。以後の決定は追記制とし、`28_Open_Issues.md` の課題が決着するたびに本ログへ転記する。

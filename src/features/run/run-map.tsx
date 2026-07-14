@@ -113,6 +113,9 @@ export function RunMap({ initialView }: { initialView: ServerRunView }) {
       const next = await load();
       if (next?.position.phase === 'battle') {
         router.push('/run/battle');
+      } else if (next?.position.phase === 'reward_pending') {
+        // Phase7: 非戦闘ノード（宝箱/ショップ/休憩/イベント/祝福/呪い等）は報酬受領画面へ（docs/27 Phase7）
+        router.push('/run/reward');
       }
     });
 
@@ -147,6 +150,14 @@ export function RunMap({ initialView }: { initialView: ServerRunView }) {
           </span>
           <div className="flex items-center gap-3">
             <span className="font-mono text-xs text-accent-gold">{view.gold}G</span>
+            {!isEnded ? (
+              <Link
+                href="/run/equipment"
+                className="rounded border border-primary/60 px-2 py-1 text-xs text-primary"
+              >
+                装備/所持品
+              </Link>
+            ) : null}
             {!isEnded ? (
               <button
                 type="button"

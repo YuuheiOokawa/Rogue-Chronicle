@@ -13,6 +13,7 @@ import type { RunState } from '@/domain/dungeon/run-state';
 import { executeEnemyAction } from '@/domain/enemy/execute-enemy-action';
 import { gainExperience } from '@/domain/progression/experience';
 import { calculateBattleReward } from '@/domain/reward/battle-reward';
+import { generateSkillChoices } from '@/domain/skill/generate-choices';
 import { createRng } from '@/domain/shared/rng';
 import { battleActionRequestSchema } from '@/schemas/battle';
 import { apiHandler, parseBody } from '@/server/services/api';
@@ -159,6 +160,7 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
       let earned = state.earned;
       let visited = state.visited;
       let responseExtra: Record<string, unknown> = {};
+      let pendingSkillChoice: RunState['pendingReward'] = null;
 
       if (battleEndedResult === 'win') {
         // 召喚された敵は報酬対象外（docs/19実装注意10）
@@ -181,7 +183,10 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
           { rewardTables: REWARD_TABLES, equipment: EQUIPMENT, relics: RELICS },
           rng,
         );
-        gold = state.gold + reward.gold;
+        // Phase7: fixed encounter（EV-10等）由来のボーナスゴールドをここで通常報酬へ加算し、
+        // run_state.pendingBattleBonusGoldは戦闘決着（勝敗問わず）で必ず0へリセットする
+        // （domain/battle配下は変更禁止のためBattleStateへは持たせない設計。run-state.tsコメント参照）。
+        gold = state.gold + reward.gold + state.pendingBattleBonusGold;
 
         const characterMaster = CHARACTERS.find((c) => c.code === character.code);
         const growth = characterMaster?.growthRates ?? { maxHp: 1, atk: 1, def: 1, spd: 1 };
@@ -189,12 +194,28 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
         character = gainResult.character;
 
         const isBoss = battle.nodeType === 'BOSS';
+        const isElite = battle.nodeType === 'ELITE';
         earned = {
           ...state.earned,
           kills: state.earned.kills + 1,
+          eliteKills: state.earned.eliteKills + (isElite ? 1 : 0),
           rankExp: state.earned.rankExp + (isBoss ? 100 : 10),
+          // ソウルシャードはdocs/05 §5.4の目安（通常+4/強敵+8/エリート+15/ボス+40）どおり
+          // calculateBattleRewardが算出済み。ここで反映しないとfinalizeの獲得量が常に0になる
+          // 実装漏れがあったため修正（統合検証時に発見）。
+          soulShards: state.earned.soulShards + reward.soulShards,
         };
         nextStatus = isBoss ? 'cleared' : 'active';
+        // Phase7: レベルアップ分のスキル3択をpendingRewardへキューする（docs/27 Phase7）。
+        // 設計判断: run_state.pendingReward.skill_choiceにはレベルアップ回数のキュー機構が無い
+        // （docs/13 API-501の「remaining」はrun-state.tsスキーマに反映されなかったため、
+        //  複数レベルアップ時も1回の3択提示に単純化する。docs/29 決定ログ参照）。
+        // ボス撃破（nextStatus='cleared'）はAPI-306/307のリザルトフローへ直結するため、
+        // 別担当実装との競合を避けるためスキル3択は挟まない（ボス戦のレベルアップは即時反映のみ）。
+        if (!isBoss && gainResult.levelUps > 0) {
+          const choices = generateSkillChoices(state.skills, character.code, { skills: SKILLS }, rng);
+          pendingSkillChoice = { type: 'skill_choice', choices, rerollRemaining: 1, claimed: false };
+        }
         responseExtra = {
           result: 'win',
           reward: { gold: reward.gold, exp: reward.exp, drops: reward.drops },
@@ -224,15 +245,20 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
         };
       }
 
+      const nextPhase = pendingSkillChoice !== null ? 'reward_pending' : battleEnded ? 'map_select' : 'battle';
+
       const nextState: RunState = {
         ...state,
-        position: { ...state.position, phase: battleEnded ? 'map_select' : 'battle' },
+        position: { ...state.position, phase: nextPhase },
         battle: battleEnded ? null : battle,
         character,
         items,
         gold,
         earned,
         visited,
+        pendingReward: pendingSkillChoice,
+        // 戦闘決着（勝敗問わず）でボーナスゴールドを消費済みにリセットする（継続中は据え置き）
+        pendingBattleBonusGold: battleEnded ? 0 : state.pendingBattleBonusGold,
         rngCursor: rng.cursor,
       };
 
@@ -246,6 +272,7 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
           battleEnded,
           ...responseExtra,
           runStatus: nextStatus,
+          position: nextState.position,
         },
       };
     },

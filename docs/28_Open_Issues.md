@@ -108,6 +108,20 @@
 - 推奨理由: 1戦闘1行なら行数は現実的（1ラン約15行）。seed再現方式は理想だがリプレイ実装が前提。
 - 影響範囲: battle_logs、削除バッチ。
 
+## ISSUE-013: 宝箱・イベント経由のソウルシャード獲得が未配線
+- 状態: Open / 決定期限: Phase 8（永続強化）
+- 背景: docs/05 §5.4は「宝箱・イベント平均+5」をearned.soulShardsの目安として記載しているが、
+  Phase 7実装ではAPI-503（宝箱開封）・API-506（イベント選択）がearned.soulShardsを加算していない
+  （戦闘勝利分は統合検証時に発見・修正済み。DEC未採番、コード内コメント参照:
+  `src/app/api/v1/runs/current/battle/actions/route.ts`）。宝箱・イベントは相対的に少額（+5程度）の
+  副次収入のため、Phase 7完了の必須条件からは外し本Issueとして記録する。
+- 選択肢: (A) API-503/506にearned.soulShards加算を追加する (B) 現状のまま据え置き、Phase 8の
+  永続強化バランス調整時にまとめて対応する
+- 推奨案: B（仮採用中）
+- 推奨理由: 主要収入源（戦闘勝利）は既に正しく機能しており、影響は軽微。Phase 8で永続強化コスト
+  （upgrade_nodes）とソウルシャード収支を一体で見直す方が手戻りが少ない。
+- 影響範囲: src/app/api/v1/runs/current/treasure/open/route.ts、src/app/api/v1/runs/current/event/choose/route.ts。
+
 ---
 
 ## 集約: 各設計書の未決事項

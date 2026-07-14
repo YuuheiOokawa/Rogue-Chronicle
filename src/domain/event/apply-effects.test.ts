@@ -87,11 +87,16 @@ describe('applyEventEffects', () => {
       masters,
       createRng(2),
     );
-    expect(r.state.encountered.equipment).toHaveLength(1);
-    const grantedCode = r.state.encountered.equipment[0];
+    // Phase7: createInitialRunStateが初期装備（iron_sword）もencountered.equipmentへ
+    // 種付けするようになったため（run-state.tsコメント参照）、変化したスロットから判定する。
+    const changedSlot = (['weapon', 'armor', 'accessory'] as const).find(
+      (slot) => r.state.equipment[slot] !== state.equipment[slot],
+    )!;
+    const grantedCode = r.state.equipment[changedSlot]!;
     const master = EQUIPMENT.find((e) => e.code === grantedCode)!;
     expect(master.rarity).toBe('common');
     expect(r.state.equipment[master.slot]).toBe(grantedCode);
+    expect(r.state.encountered.equipment).toEqual(expect.arrayContaining(['iron_sword', grantedCode]));
   });
 
   it('grantConsumable: 上限5を超えた分は+10G換算される', () => {
