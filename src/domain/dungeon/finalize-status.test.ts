@@ -5,6 +5,7 @@ import { DUNGEONS } from '@/constants/masters/dungeons';
 import { EQUIPMENT } from '@/constants/masters/equipment';
 import { generateDungeonMap } from '@/domain/dungeon/generate-map';
 import { createInitialRunState, type RunState } from '@/domain/dungeon/run-state';
+import { ZERO_UPGRADE_BONUS } from '@/domain/progression/apply-upgrades';
 import { createRng } from '@/domain/shared/rng';
 
 import { completeDungeon, failDungeon, FinalizeStatusError, retireDungeon } from './finalize-status';
@@ -22,6 +23,8 @@ function makeState(overrides: Partial<RunState> = {}): RunState {
     character: rain,
     equipment: { weapon: ironSword, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
   return {
     ...state,

@@ -11,6 +11,7 @@ import { generateDungeonMap } from '@/domain/dungeon/generate-map';
 import { createInitialRunState, type RunState } from '@/domain/dungeon/run-state';
 import { createRng } from '@/domain/shared/rng';
 
+import { ZERO_UPGRADE_BONUS } from './apply-upgrades';
 import { expToNextRank } from './rank';
 import { codexKey, grantPersistentRewards, type PlayerPersistentData } from './grant-rewards';
 
@@ -36,6 +37,8 @@ function makeRun(overrides: Partial<RunState> = {}): RunState {
     character: rain,
     equipment: { weapon: ironSword, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
   return { ...state, ...overrides };
 }
@@ -67,6 +70,17 @@ describe('grantPersistentRewards', () => {
     expect(grant.transactions).toEqual([
       { currency: 'soul_shards', amount: 123, reason: 'run_finalize', refId: 'run-1' },
     ]);
+  });
+
+  it('永続強化shardGainPct（Phase8 upg_shard_1/2）分だけソウルシャードが追加で乗算される', () => {
+    const run = makeRun({
+      earned: { soulShards: 123, rankExp: 0, kills: 0, eliteKills: 0 },
+      shardGainPct: 20,
+    });
+    const grant = grantPersistentRewards(run, 'cleared', makePlayer(), masters, 'run-1b');
+    // floor(123 * 1.20) = floor(147.6) = 147（結果係数はfinalize-status.tsで適用済みのrun.earnedへさらに乗算）
+    expect(grant.soulShards).toBe(147);
+    expect(grant.transactions[0]?.amount).toBe(147);
   });
 
   it('複数ランクアップを一括処理する', () => {

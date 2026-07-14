@@ -16,6 +16,7 @@ import { DUNGEONS } from '@/constants/masters/dungeons';
 import { generateDungeonMap } from '@/domain/dungeon/generate-map';
 import { createInitialRunState } from '@/domain/dungeon/run-state';
 import { selectNextNode } from '@/domain/dungeon/select-node';
+import { ZERO_UPGRADE_BONUS } from '@/domain/progression/apply-upgrades';
 import { createRng, generateDungeonSeed } from '@/domain/shared/rng';
 import { prisma, type JsonInput } from '@/server/services/prisma';
 import { createUserWithDefaults } from '@/server/usecases/auth/create-user';
@@ -51,6 +52,8 @@ describe.skipIf(!runDbTests)('戦闘フロー（DB統合・API-401/402）', () =
       character,
       equipment: { weapon: null, armor: null, accessory: null },
       rngCursor: rng.cursor,
+      upgradeBonus: ZERO_UPGRADE_BONUS,
+      startRelic: null,
     });
 
     const runId = randomUUID();

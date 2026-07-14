@@ -17,6 +17,7 @@ import { DUNGEONS } from '@/constants/masters/dungeons';
 import { completeDungeon, failDungeon } from '@/domain/dungeon/finalize-status';
 import { generateDungeonMap } from '@/domain/dungeon/generate-map';
 import { createInitialRunState, type RunState } from '@/domain/dungeon/run-state';
+import { ZERO_UPGRADE_BONUS } from '@/domain/progression/apply-upgrades';
 import { createRng, generateDungeonSeed } from '@/domain/shared/rng';
 import { prisma, type JsonInput } from '@/server/services/prisma';
 import { createUserWithDefaults } from '@/server/usecases/auth/create-user';
@@ -38,6 +39,8 @@ function buildInitialState(): RunState {
     character,
     equipment: { weapon: null, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
 }
 

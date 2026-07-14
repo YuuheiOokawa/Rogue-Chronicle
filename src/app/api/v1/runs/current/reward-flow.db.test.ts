@@ -16,6 +16,7 @@ import { DUNGEONS } from '@/constants/masters/dungeons';
 import type { NodeTypeCode } from '@/constants/masters/types';
 import { createInitialRunState, type RunState } from '@/domain/dungeon/run-state';
 import { selectNextNode } from '@/domain/dungeon/select-node';
+import { ZERO_UPGRADE_BONUS } from '@/domain/progression/apply-upgrades';
 import { createRng, generateDungeonSeed } from '@/domain/shared/rng';
 import { prisma, type JsonInput } from '@/server/services/prisma';
 import { createUserWithDefaults } from '@/server/usecases/auth/create-user';
@@ -58,6 +59,8 @@ describe.skipIf(!runDbTests)('報酬フロー（DB統合・API-503/504/506）', 
       character,
       equipment: { weapon: null, armor: null, accessory: null },
       rngCursor: rng.cursor,
+      upgradeBonus: ZERO_UPGRADE_BONUS,
+      startRelic: null,
     });
     // ゴールドを持たせておく（ショップ購入テスト用）
     const funded: RunState = { ...initialState, gold: 999 };

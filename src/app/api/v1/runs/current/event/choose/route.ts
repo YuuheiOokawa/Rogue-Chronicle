@@ -116,6 +116,14 @@ export const POST = apiHandler('API-506', async (_traceId, req: Request) => {
         levelUps = gainResult.levelUps;
       }
 
+      // 宝箱・イベント経由のソウルシャード獲得（docs/05 §5.4「宝箱・イベント平均+5」。ISSUE-013解消）。
+      // STORYはselect-node.tsのノード進入時点で既に+5済み・HEALはdocs上シャード言及が無いため対象外とし、
+      // EVENT/BLESS/CURSEの選択確定（本分岐、autoResolvedを通らないケース）にのみ加算する。
+      workingState = {
+        ...workingState,
+        earned: { ...workingState.earned, soulShards: workingState.earned.soulShards + 5 },
+      };
+
       let finalState: RunState;
       if (afterEffects.triggeredBattle !== null) {
         let player = afterEffects.triggeredBattle.player;
@@ -151,7 +159,13 @@ export const POST = apiHandler('API-506', async (_traceId, req: Request) => {
         finalState = {
           ...workingState,
           position: { ...workingState.position, phase: 'reward_pending' },
-          pendingReward: { type: 'skill_choice', choices, rerollRemaining: 1, claimed: false },
+          // rerollRemaining基本値1 + 永続強化upg_reroll_1のボーナス（ラン開始時スナップショット、Phase8）
+          pendingReward: {
+            type: 'skill_choice',
+            choices,
+            rerollRemaining: 1 + workingState.rerollBonus,
+            claimed: false,
+          },
           rngCursor: rng.cursor,
         };
       } else {

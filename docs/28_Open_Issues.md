@@ -109,7 +109,7 @@
 - 影響範囲: battle_logs、削除バッチ。
 
 ## ISSUE-013: 宝箱・イベント経由のソウルシャード獲得が未配線
-- 状態: Open / 決定期限: Phase 8（永続強化）
+- 状態: Closed（Phase 8で解消。DEC-292参照） / 決定期限: Phase 8（永続強化）
 - 背景: docs/05 §5.4は「宝箱・イベント平均+5」をearned.soulShardsの目安として記載しているが、
   Phase 7実装ではAPI-503（宝箱開封）・API-506（イベント選択）がearned.soulShardsを加算していない
   （戦闘勝利分は統合検証時に発見・修正済み。DEC未採番、コード内コメント参照:
@@ -121,6 +121,25 @@
 - 推奨理由: 主要収入源（戦闘勝利）は既に正しく機能しており、影響は軽微。Phase 8で永続強化コスト
   （upgrade_nodes）とソウルシャード収支を一体で見直す方が手戻りが少ない。
 - 影響範囲: src/app/api/v1/runs/current/treasure/open/route.ts、src/app/api/v1/runs/current/event/choose/route.ts。
+- 解消内容（Phase 8、DEC-292）: 選択肢(A)を採用。API-503（宝箱開封）は開封確定時に、API-506（EVENT/BLESS/CURSEの
+  選択確定時、HEAL/STORYの自動解決分岐は対象外）にそれぞれ`earned.soulShards += 5`を追加した。
+  STORYは既にselect-node.tsで+5済みのため二重加算を避けている。curlによるE2E確認で、宝箱開封後に
+  earned.soulShardsが期待どおり+5されることを確認済み。
+
+## ISSUE-014: 実績のrun内条件（runLevel/runRelicsHeld/runGoldHeld）はAPI-106でprogress表示ができない
+- 状態: Open / 決定期限: Phase 8以降（player_progress拡張時）
+- 背景: achievements.condition.typeのうちrunLevel/runRelicsHeld/runGoldHeldは「1ラン内の瞬間最大値」
+  （finalize時点のrun_state由来）であり、player_progressには対応する永続追跡列（例:
+  bestRunLevel/bestRunRelicsHeld/bestRunGoldHeld）が存在しない。実績解除判定自体（evaluateAchievementCondition）
+  はfinalize時点のPlayerStatsSnapshotで正しく行えるが、API-106（実績一覧取得、docs/13 §4.2）は
+  「現在の永続データからprogressを再算出」する必要があり、これら3種は再算出不能。
+- 選択肢: (A) player_progressにbestRunLevel等の列を追加し、finalize時に都度更新する
+  (B) 現状のまま据え置き、一覧画面ではprogress=0固定（未解除時）・解除済みはprogress=goalとして表示する
+- 推奨案: B（仮採用中。src/server/usecases/achievement/achievement-view.tsで実装）
+- 推奨理由: 実績解除自体は正しく機能する。一覧画面の進捗表示は付加情報であり、MVPでは0/goal表示でも
+  致命的ではない。列追加はPhase 8以降のバランス調整とあわせて行う方が手戻りが少ない。
+- 影響範囲: src/server/usecases/achievement/achievement-view.ts、src/app/api/v1/achievements/route.ts、
+  prisma/schema.prisma（PlayerProgress、将来列追加時）。
 
 ---
 

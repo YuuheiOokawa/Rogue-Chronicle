@@ -123,7 +123,10 @@ export function grantPersistentRewards(
   masters: GrantRewardsMasters,
   runId: string,
 ): PersistentGrant {
-  const shards = run.earned.soulShards; // complete/fail/retireで係数適用済み（domain/dungeon/finalize-status.ts）
+  // complete/fail/retireで結果係数（100/50/80%）適用済みの上に、永続強化upg_shard_1/2の
+  // ソウルシャード獲得+n%（run.shardGainPct、ラン開始時スナップショット、Phase8）をさらに乗算する。
+  // 2つの%は独立倍率のため適用順は結果に影響しない（乗算の可換性）。
+  const shards = Math.floor(run.earned.soulShards * (1 + run.shardGainPct / 100));
 
   const rankResult = addRankExp(player.progress, run.earned.rankExp);
 

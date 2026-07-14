@@ -214,7 +214,13 @@ export const POST = apiHandler('API-402', async (_traceId, req: Request) => {
         // 別担当実装との競合を避けるためスキル3択は挟まない（ボス戦のレベルアップは即時反映のみ）。
         if (!isBoss && gainResult.levelUps > 0) {
           const choices = generateSkillChoices(state.skills, character.code, { skills: SKILLS }, rng);
-          pendingSkillChoice = { type: 'skill_choice', choices, rerollRemaining: 1, claimed: false };
+          // rerollRemaining基本値1 + 永続強化upg_reroll_1のボーナス（ラン開始時スナップショット、Phase8）
+          pendingSkillChoice = {
+            type: 'skill_choice',
+            choices,
+            rerollRemaining: 1 + state.rerollBonus,
+            claimed: false,
+          };
         }
         responseExtra = {
           result: 'win',

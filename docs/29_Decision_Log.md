@@ -272,9 +272,14 @@
 | DEC-284 | 戦闘勝利によるレベルアップ時のスキル3択（pendingReward=skill_choice）は、ボス撃破（nextStatus='cleared'、別担当のリザルトフローへ直結）の場合は提示しない。ボス戦のレベルアップはそのまま反映し、通常戦闘の勝利時のみ3択を挟む（別担当実装との競合回避） | src/app/api/v1/runs/current/battle/actions/route.ts |
 | DEC-285 | 休憩（API-505）に、docs/13原文のheal/upgrade_skillの2択に加え「delete_skill」（所持スキルの削除）を追加する。固有スキル（isInnate）は削除不可とする（Phase7実装指示に基づく） | src/app/api/v1/runs/current/rest/route.ts |
 | DEC-286 | 重複レリック受領時の代替は+50ゴールドとする（docs/13 API-508コメントの仮決定を踏襲し、API-503の宝箱経由レリック受領にも同一ルールを適用） | src/app/api/v1/runs/current/treasure/open/route.ts / relic/route.ts |
+| DEC-287 | SCR-106（永続強化画面）のツリーデータ取得は、docs/09原文の「API-102拡張（仮決定）」ではなく `GET /api/v1/player/upgrades` として独立実装する。API-204（POST、同一パス）とリソースを共有しREST的な一貫性を保てるため（GET/POSTを同一エンドポイントに統一） | src/app/api/v1/player/upgrades/route.ts |
+| DEC-290 | SCR-107（武器一覧）/SCR-108（スキル図鑑）/SCR-109（レリック図鑑）/SCR-110（敵図鑑）は単一画面（/codex）+タブ切替（equipment/skill/relic/enemy）で統合実装する。4画面はdocs/09 §5.12で「同一テンプレート」と明記されているUI構造であり、差分はタブ（対象マスタ種別）のみでAPI（API-601、type切替）も共通のため、画面を分割する実益が薄い | src/app/codex/page.tsx / src/features/codex/codex-screen.tsx |
+| DEC-291 | 敵図鑑（SCR-108〜110節の「敵図鑑は撃破数も表示」要件）は、player_progressが敵種別ごとの撃破数を持たず（totalKills/eliteKillsの集計のみ）、per-enemyの永続列も存在しないため、MVPでは撃破数表示を含めない | src/server/usecases/codex/codex-view.ts |
+| DEC-292 | ISSUE-013解消: API-503（宝箱開封）・API-506（EVENT/BLESS/CURSEの選択確定、HEAL/STORYの自動解決分岐は除く）にearned.soulShards+=5を追加する（docs/05 §5.4「宝箱・イベント平均+5」）。STORYは既にselect-node.tsで+5済みのため二重加算しない | src/app/api/v1/runs/current/treasure/open/route.ts / event/choose/route.ts |
+| DEC-293 | 永続強化（Phase8）のrerollBonus/shardGainPctは、run_state作成時にRunStateへ追加しただけでは消費箇所が無く死んだフィールドになっていたため、統合検証で発見し配線した: rerollRemainingの基本値1に`state.rerollBonus`を加算（battle/actions・event/chooseのskill_choice生成箇所）、grantPersistentRewards内でrun.earned.soulShards（結果係数適用済み）に`(1+run.shardGainPct/100)`を乗算 | src/app/api/v1/runs/current/battle/actions/route.ts / event/choose/route.ts / src/domain/progression/grant-rewards.ts |
 
 - 注: DEC-104〜105は12_Database_Design.md内で欠番（未使用）。欠番は再利用しない（記載ルール準拠）。
-- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 277〜279 / 287以降は空き番号。
+- 注: DEC-047〜049 / 058〜080 / 090 / 099〜100 / 115〜130 / 146〜150 / 155〜180 / 188〜220 / 223〜239 / 242〜249 / 258〜259 / 266〜269 / 277〜279 / 288〜289 / 294以降は空き番号。
 
 ## 未決事項
 - 本ログはDEC-001〜020を初期採録した。以後の決定は追記制とし、`28_Open_Issues.md` の課題が決着するたびに本ログへ転記する。

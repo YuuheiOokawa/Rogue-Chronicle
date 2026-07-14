@@ -107,9 +107,24 @@ function HomeContent({ data }: { data: HomeResponse }) {
           >
             🛡 キャラクター
           </Link>
-          <DisabledTile label="✦ 永続強化" />
-          <DisabledTile label="📖 図鑑" />
-          <DisabledTile label="🏆 実績" />
+          <Link
+            href="/upgrades"
+            className="flex min-h-16 items-center rounded-lg bg-surface-raised p-4 font-semibold hover:bg-surface-raised/80"
+          >
+            ✦ 永続強化
+          </Link>
+          <Link
+            href="/codex"
+            className="flex min-h-16 items-center rounded-lg bg-surface-raised p-4 font-semibold hover:bg-surface-raised/80"
+          >
+            📖 図鑑
+          </Link>
+          <Link
+            href="/achievements"
+            className="flex min-h-16 items-center rounded-lg bg-surface-raised p-4 font-semibold hover:bg-surface-raised/80"
+          >
+            🏆 実績
+          </Link>
         </div>
 
         <Link
@@ -157,18 +172,5 @@ function HomeContent({ data }: { data: HomeResponse }) {
         </p>
       </footer>
     </>
-  );
-}
-
-function DisabledTile({ label }: { label: string }) {
-  return (
-    <div
-      aria-disabled="true"
-      title="Phase 8で実装予定"
-      className="flex min-h-16 items-center rounded-lg bg-surface-raised p-4 text-content-muted opacity-50"
-    >
-      {label}
-      <span className="ml-auto text-[10px]">近日</span>
-    </div>
   );
 }

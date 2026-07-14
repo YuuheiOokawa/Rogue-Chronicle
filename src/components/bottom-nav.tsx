@@ -1,16 +1,16 @@
 import Link from 'next/link';
 
-type Tab = 'home' | 'characters' | 'settings';
+type Tab = 'home' | 'characters' | 'upgrades' | 'codex' | 'settings';
 
-const TABS: { key: Tab | 'upgrades' | 'codex'; label: string; icon: string; href?: string }[] = [
+const TABS: { key: Tab; label: string; icon: string; href: string }[] = [
   { key: 'home', label: 'ホーム', icon: '🏠', href: '/home' },
   { key: 'characters', label: 'キャラ', icon: '🛡', href: '/characters' },
-  { key: 'upgrades', label: '強化', icon: '✦' }, // Phase 8
-  { key: 'codex', label: '図鑑', icon: '📖' }, // Phase 8
+  { key: 'upgrades', label: '強化', icon: '✦', href: '/upgrades' },
+  { key: 'codex', label: '図鑑', icon: '📖', href: '/codex' },
   { key: 'settings', label: '設定', icon: '⚙', href: '/settings' },
 ];
 
-/** 下部固定ナビ5タブ（docs/09 SCR-101。強化・図鑑はPhase 8のためdisabled） */
+/** 下部固定ナビ5タブ（docs/09 SCR-101。強化・図鑑はPhase 8で解放） */
 export function BottomNav(props: { current: Tab }) {
   return (
     <nav

@@ -6,9 +6,12 @@ import { v7 as uuidv7 } from 'uuid';
 import { CHARACTERS } from '@/constants/masters/characters';
 import { DUNGEONS } from '@/constants/masters/dungeons';
 import { EQUIPMENT } from '@/constants/masters/equipment';
+import { RELICS } from '@/constants/masters/relics';
+import { UPGRADE_NODES } from '@/constants/masters/upgrades';
 import type { EquipmentMaster } from '@/constants/masters/types';
 import { generateDungeonMap } from '@/domain/dungeon/generate-map';
 import { createInitialRunState } from '@/domain/dungeon/run-state';
+import { computeUpgradeBonus } from '@/domain/progression/apply-upgrades';
 import { createRng, generateDungeonSeed } from '@/domain/shared/rng';
 import { startRunSchema } from '@/schemas/run';
 import { apiHandler, parseBody } from '@/server/services/api';
@@ -79,15 +82,28 @@ export const POST = apiHandler('API-303', async (traceId, req: Request) => {
   });
   if (active) throw new AppError('ERR_RUN_ALREADY_ACTIVE');
 
+  // 永続強化（upgrade_nodes）のラン開始時適用ボーナス（Phase8。docs/13 API-303 / CORE_SPEC §5.9）
+  const playerUpgrades = await prisma.playerUpgrade.findMany({ where: { userId: session.userId } });
+  const upgradeRanks = new Map(playerUpgrades.map((u) => [u.upgradeNodeCode, u.rank]));
+  const upgradeBonus = computeUpgradeBonus(upgradeRanks, UPGRADE_NODES);
+
   // seed生成（乱数源はdomain外から注入。DEC-019）
   const seed = generateDungeonSeed(randomBytes(4).readUInt32LE(0));
   const rng = createRng(seed);
   const map = generateDungeonMap(seed, dungeon.generationConfig, rng);
+
+  // upg_relic_1（開始時レリック1個）: commonかつ非呪いレリックから注入済みrngで1件抽選する（防御的に0件なら付与しない）
+  const startableRelics = RELICS.filter((r) => r.rarity === 'common' && !r.isCursed);
+  const startRelic =
+    upgradeBonus.startRelicCount > 0 && startableRelics.length > 0 ? rng.pick(startableRelics) : null;
+
   const runState = createInitialRunState({
     map,
     character,
     equipment,
     rngCursor: rng.cursor,
+    upgradeBonus,
+    startRelic,
   });
 
   const runId = uuidv7();

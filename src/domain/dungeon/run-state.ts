@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import type { CharacterMaster, EquipmentMaster } from '@/constants/masters/types';
+import type { CharacterMaster, EquipmentMaster, RelicMaster } from '@/constants/masters/types';
+import type { UpgradeBonus } from '@/domain/progression/apply-upgrades';
 
 import { battleStateSchema } from '../battle/types';
 import { dungeonMapSchema, type DungeonMap } from './map-types';
@@ -16,6 +17,8 @@ import { dungeonMapSchema, type DungeonMap } from './map-types';
  *   非戦闘ノード（TREASURE/SHOP/REST/EVENT/BLESS/HEAL/CURSE/STORY/SECRET）はノード進入と同時に
  *   即時解決してpendingRewardへ格納するか、報酬不要ならmap_selectへ戻す設計とし、
  *   'node_action' という独立phaseは導入しない（実装判断。1phase減らせて状態遷移が単純になるため）。
+ * - Phase 8: 永続強化（upgrade_nodes）のラン開始時適用に伴い rerollBonus / shardGainPct を追加
+ *   （ラン開始時点でのスナップショット。詳細は各フィールドの直上コメント）。
  */
 
 export const RUN_STATE_SCHEMA_VERSION = 1;
@@ -182,6 +185,15 @@ export const runStateSchema = z.object({
    * 勝利なら通常報酬へ加算、勝敗を問わず0へリセットする。
    */
   pendingBattleBonusGold: z.number().int().min(0),
+  /**
+   * 永続強化（upgrade_nodes）由来のスキル3択リロール回数加算・ソウルシャード獲得%加算
+   * （Phase8で追加。CORE_SPEC §5.9 / docs/05 §5.4）。
+   * ラン開始時点（createInitialRunState）のUpgradeBonusをスナップショットとして保持し、
+   * ラン中に永続強化を追加購入しても当該ランには反映しない設計とするため、以後この2値は
+   * ラン終了まで不変とする（リロール消費回数・シャード獲得計算側が参照するのみ）。
+   */
+  rerollBonus: z.number().int().min(0),
+  shardGainPct: z.number().int().min(0),
   rngCursor: z.number().int().min(0),
   earned: z.object({
     soulShards: z.number().int().min(0),
@@ -251,6 +263,14 @@ interface InitialRunStateParams {
   /** スロット別の初期装備（未選択はnull）。所持検証はusecase側で実施済みであること */
   equipment: { weapon: EquipmentMaster | null; armor: EquipmentMaster | null; accessory: EquipmentMaster | null };
   rngCursor: number;
+  /** 永続強化（upgrade_nodes）のラン開始時適用ボーナス（Phase8。呼び出し側=API-303が算出する） */
+  upgradeBonus: UpgradeBonus;
+  /**
+   * upgradeBonus.startRelicCount > 0 のときに付与するレリック（抽選済みのもの）。
+   * レリックの乱数抽選はserver層/API-303側の責務であり、domain層では行わない。
+   * startRelicCount === 0 のときは呼び出し側が必ずnullを渡すこと。
+   */
+  startRelic: RelicMaster | null;
 }
 
 /** 初期SP（CORE_SPEC §5.1: 初期最大10） */
@@ -260,14 +280,14 @@ const INITIAL_ITEMS = [{ code: 'potion', count: 1 }];
 
 /**
  * ラン開始時のrun_state構築（docs/20 §2.4 startDungeonRunのdomain部分）。
- * ステータス = キャラ基礎値 + 装備加算（得意武器一致は装備値+10%、docs/18）。
- * 永続強化（upgrade_nodes）の適用は Phase 8 で追加する（仮決定: P5では未適用）。
+ * ステータス = キャラ基礎値 × 永続強化%（Phase8） → 装備加算（得意武器一致は装備値+10%、docs/18）
+ * の順で適用する（永続強化は基礎値へのパーセンテージ、装備加算はその後の整数加算のため）。
  */
 export function createInitialRunState(params: InitialRunStateParams): RunState {
-  const { character, equipment, map } = params;
+  const { character, equipment, map, upgradeBonus, startRelic } = params;
   const stats = {
-    maxHp: character.baseStats.maxHp,
-    atk: character.baseStats.atk,
+    maxHp: Math.floor(character.baseStats.maxHp * (1 + upgradeBonus.startHpPct / 100)),
+    atk: Math.floor(character.baseStats.atk * (1 + upgradeBonus.startAtkPct / 100)),
     def: character.baseStats.def,
     spd: character.baseStats.spd,
     critRate: character.baseStats.critRate,
@@ -315,13 +335,15 @@ export function createInitialRunState(params: InitialRunStateParams): RunState {
       armor: equipment.armor?.code ?? null,
       accessory: equipment.accessory?.code ?? null,
     },
-    relics: [],
+    relics: startRelic !== null ? [startRelic.code] : [],
     items: [...INITIAL_ITEMS],
-    gold: 0,
+    gold: upgradeBonus.startGoldFlat,
     battle: null,
     pendingReward: null,
     nextBattleDebuff: null,
     pendingBattleBonusGold: 0,
+    rerollBonus: upgradeBonus.rerollBonus,
+    shardGainPct: upgradeBonus.shardGainPct,
     rngCursor: params.rngCursor,
     earned: { soulShards: 0, rankExp: 0, kills: 0, eliteKills: 0 },
     // 初期装備も「このランで所持している装備」のためencountered.equipmentへ含める
@@ -329,7 +351,7 @@ export function createInitialRunState(params: InitialRunStateParams): RunState {
     encountered: {
       enemies: [],
       skills: [],
-      relics: [],
+      relics: startRelic !== null ? [startRelic.code] : [],
       equipment: [equipment.weapon, equipment.armor, equipment.accessory]
         .filter((e): e is EquipmentMaster => e !== null)
         .map((e) => e.code),

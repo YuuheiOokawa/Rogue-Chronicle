@@ -4,6 +4,7 @@ import { CHARACTERS } from '@/constants/masters/characters';
 import { DUNGEONS } from '@/constants/masters/dungeons';
 import type { NodeTypeCode } from '@/constants/masters/types';
 
+import { ZERO_UPGRADE_BONUS } from '../progression/apply-upgrades';
 import { createRng } from '../shared/rng';
 import { generateDungeonMap } from './generate-map';
 import { bossNode, findNode, type DungeonMap } from './map-types';
@@ -27,6 +28,8 @@ function makeState(seed = 7): RunState {
     character: rain,
     equipment: { weapon: null, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
 }
 
@@ -49,6 +52,8 @@ function makeStateWithNode(
     character: rain,
     equipment: { weapon: null, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
   return { ...base, ...overrides };
 }
@@ -143,6 +148,8 @@ describe('selectNextNode（docs/20 §2.3・Phase7本実装）', () => {
         character: rain,
         equipment: { weapon: null, armor: null, accessory: null },
         rngCursor: rng.cursor,
+        upgradeBonus: ZERO_UPGRADE_BONUS,
+        startRelic: null,
       });
       const f3 = state.map.floors[2][0];
       expect(findNode(state.map, f3.id)).toBeTruthy();

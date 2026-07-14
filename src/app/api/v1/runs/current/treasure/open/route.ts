@@ -100,6 +100,8 @@ export const POST = apiHandler('API-503', async (_traceId, req: Request) => {
         encountered,
         pendingReward: null,
         position: { ...state.position, phase: 'map_select' },
+        // 宝箱経由のソウルシャード獲得（docs/05 §5.4「宝箱・イベント平均+5」。ISSUE-013解消）
+        earned: { ...state.earned, soulShards: state.earned.soulShards + 5 },
       };
       return { nextState, response: { claimed: true, reward, position: nextState.position } };
     },

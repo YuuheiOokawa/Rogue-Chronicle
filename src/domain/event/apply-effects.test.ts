@@ -9,6 +9,7 @@ import { REWARD_TABLES } from '@/constants/masters/reward-tables';
 import { SKILLS } from '@/constants/masters/skills';
 import { createInitialRunState, validateRunState, type RunState } from '@/domain/dungeon/run-state';
 import { generateDungeonMap } from '@/domain/dungeon/generate-map';
+import { ZERO_UPGRADE_BONUS } from '@/domain/progression/apply-upgrades';
 import { createRng } from '@/domain/shared/rng';
 
 import { applyEventEffects, type EventEffectMasters } from './apply-effects';
@@ -34,6 +35,8 @@ function makeState(): RunState {
     character: rain,
     equipment: { weapon: ironSword, armor: null, accessory: null },
     rngCursor: rng.cursor,
+    upgradeBonus: ZERO_UPGRADE_BONUS,
+    startRelic: null,
   });
   // 階層3のノードへ進めておく（floor基準のeffect検証用）
   return { ...state, position: { ...state.position, floor: 3, nodeId: 'f3n1' } };
