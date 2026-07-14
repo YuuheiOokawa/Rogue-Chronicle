@@ -67,4 +67,4 @@ docs/         # 設計書一式（実装は設計書を正とする）
 
 ## License
 
-Private（公開方針は docs/25_GitHub_Operation.md 参照）
+MIT
